@@ -27,7 +27,14 @@ fn default_program() -> String {
     if let Ok(shell) = std::env::var("TERMIO_SHELL") {
         return shell;
     }
-    if cfg!(windows) { "powershell.exe".into() } else { std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()) }
+    if cfg!(windows) {
+        "powershell.exe".into()
+    } else if cfg!(target_os = "android") {
+        // Android sets no SHELL and has no /bin: its shell is toybox's mksh.
+        "/system/bin/sh".into()
+    } else {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    }
 }
 
 fn size(columns: u16, lines: u16, width: u16, height: u16) -> PtySize {
@@ -37,6 +44,17 @@ fn size(columns: u16, lines: u16, width: u16, height: u16) -> PtySize {
 impl LocalPty {
     /// Starts the program in a pty of `columns` × `lines` cells; its output goes to `sink`.
     pub fn spawn(options: &LocalOptions, columns: u16, lines: u16, sink: Arc<dyn Sink>) -> io::Result<Self> {
+        // Runtimes such as Bun start with Ctrl+C ignored, and children inherit that flag: the
+        // shell would then never see the CTRL_C_EVENT ConPTY makes of a typed ^C. Clear it first.
+        #[cfg(windows)]
+        {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn SetConsoleCtrlHandler(handler: *const core::ffi::c_void, add: i32) -> i32;
+            }
+            // SAFETY: a null handler with FALSE only resets this process's ignore-Ctrl+C flag.
+            unsafe { SetConsoleCtrlHandler(core::ptr::null(), 0) };
+        }
         let pair = native_pty_system().openpty(size(columns, lines, 0, 0)).map_err(other)?;
         let mut command = CommandBuilder::new(options.program.clone().unwrap_or_else(default_program));
         command.args(&options.args);

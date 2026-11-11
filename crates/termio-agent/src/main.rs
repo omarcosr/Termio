@@ -31,8 +31,13 @@ fn detach() {}
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some("serve") {
-        usage();
+    match args.next().as_deref() {
+        Some("serve") => {}
+        Some("--version") => {
+            println!("termio-agent {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        _ => usage(),
     }
     let mut bind: SocketAddr = "0.0.0.0:0".parse().expect("valid address");
     while let Some(arg) = args.next() {

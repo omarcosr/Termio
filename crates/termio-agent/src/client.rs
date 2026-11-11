@@ -258,6 +258,15 @@ pub async fn terminate_session(address: SocketAddr, rendezvous: &Rendezvous) {
     let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
 }
 
+/// Whether an agent answers over QUIC at `address` within `limit`, without attaching to it.
+pub async fn reachable(address: SocketAddr, rendezvous: &Rendezvous, limit: Duration) -> bool {
+    let bind: SocketAddr = if address.is_ipv6() { "[::]:0".parse().expect("valid") } else { "0.0.0.0:0".parse().expect("valid") };
+    let Ok(endpoint) = quinn::Endpoint::client(bind) else { return false };
+    let answered = matches!(tokio::time::timeout(limit, connection(&endpoint, address, rendezvous)).await, Ok(Ok(_)));
+    endpoint.close(0u32.into(), b"probe");
+    answered
+}
+
 /// Runs a session until it ends, reconnecting after every drop with backoff. Input typed while
 /// the link is down is dropped, as a terminal does when its line is cut.
 pub async fn run(address: SocketAddr, rendezvous: Rendezvous, columns: u16, lines: u16, events: std::sync::Arc<dyn Events>, mut commands: mpsc::UnboundedReceiver<Command>) {

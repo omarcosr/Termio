@@ -16,6 +16,58 @@ use termio_vt::{
 
 /// Font size and inner margin, in layout pixels.
 const FONT_SIZE: f32 = 13.0;
+
+/// The terminal font size in layout pixels, set from the appearance settings (bits of an f32).
+static FONT_SIZE_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+
+/// Terminal preferences from the settings screen, shared by every session.
+pub struct Prefs {
+    pub theme: Theme,
+    /// Overrides the shape programs leave at the default block.
+    pub cursor: Option<CursorShape>,
+    /// Space around the grid, in layout pixels.
+    pub padding: f32,
+}
+
+static PREFS: std::sync::Mutex<Option<Prefs>> = std::sync::Mutex::new(None);
+
+pub fn set_prefs(prefs: Prefs) {
+    *PREFS.lock().unwrap_or_else(|p| p.into_inner()) = Some(prefs);
+}
+
+fn with_prefs<R>(action: impl FnOnce(Option<&Prefs>) -> R) -> R {
+    action(PREFS.lock().unwrap_or_else(|p| p.into_inner()).as_ref())
+}
+
+/// A colour scheme by name; unknown names give the default.
+pub fn named_theme(name: &str) -> Theme {
+    let hex = |values: [u32; 20]| {
+        let mut ansi = [Color::hex(0); 16];
+        for (slot, value) in ansi.iter_mut().zip(&values[4..]) {
+            *slot = Color::hex(*value);
+        }
+        Theme { foreground: Color::hex(values[0]), background: Color::hex(values[1]), cursor: Color::hex(values[2]), selection: Color::hex(values[3]), ansi }
+    };
+    match name {
+        "dracula" => hex([0xf8f8f2, 0x282a36, 0xf8f8f2, 0x44475a, 0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2, 0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff]),
+        "solarized" => hex([0x93a1a1, 0x002b36, 0x93a1a1, 0x073642, 0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5, 0x586e75, 0xcb4b16, 0x859900, 0xb58900, 0x268bd2, 0x6c71c4, 0x2aa198, 0xfdf6e3]),
+        "gruvbox" => hex([0xebdbb2, 0x282828, 0xebdbb2, 0x504945, 0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984, 0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2]),
+        "light" => hex([0x24292f, 0xffffff, 0x24292f, 0xb6d6fd, 0x24292f, 0xcf222e, 0x116329, 0x7d4e00, 0x0969da, 0x8250df, 0x1b7c83, 0x6e7781, 0x57606a, 0xa40e26, 0x1a7f37, 0x633c01, 0x218bff, 0xa475f9, 0x3192aa, 0x8c959f]),
+        _ => Theme::default(),
+    }
+}
+
+pub fn set_font_size(size: f32) {
+    FONT_SIZE_BITS.store(size.clamp(8.0, 32.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn font_size() -> f32 {
+    match FONT_SIZE_BITS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => FONT_SIZE,
+        bits => f32::from_bits(bits),
+    }
+}
 const PADDING: f32 = 6.0;
 const SCROLLBACK: usize = 10_000;
 /// Tarve reports the wheel in layout pixels: 100 per notch, which scrolls three lines.
@@ -38,6 +90,30 @@ struct Click {
     count: u8,
 }
 
+/// Mosh-style local echo. Typed characters show at once, underlined, and the server's echo
+/// replaces them a round trip later. Nothing is shown until the server has proved it echoes on
+/// this line, so passwords and programs that draw their own input never get a fake character;
+/// Enter, a mismatch or a silent server withdraw that trust.
+#[derive(Default)]
+struct Predict {
+    enabled: bool,
+    trusted: bool,
+    /// Line, column and character, oldest first, with when the first was typed.
+    pending: Vec<(usize, usize, char)>,
+    since: Option<Instant>,
+    /// Lines to repaint because a prediction appeared or went away.
+    stale: Vec<usize>,
+}
+
+impl Predict {
+    fn withdraw(&mut self, trusted: bool) {
+        self.stale.extend(self.pending.iter().map(|&(line, _, _)| line));
+        self.pending.clear();
+        self.since = None;
+        self.trusted = trusted;
+    }
+}
+
 struct State {
     vt: Vt,
     metrics: Option<FontMetrics>,
@@ -46,6 +122,11 @@ struct State {
     cells: Vec<CellView>,
     /// Where the cursor was painted last, so that line is repainted when it leaves.
     cursor_line: Option<usize>,
+    /// Local echo: characters typed on a remote session, drawn before the server echoes them.
+    predict: Predict,
+    /// Search matches as (grid line, first column, columns), and the current one.
+    matches: Vec<(i32, usize, usize)>,
+    current: Option<usize>,
     /// The mouse button held, when the program is not the one receiving it.
     selecting: bool,
     /// The button being reported to the program.
@@ -85,11 +166,14 @@ impl TerminalSession {
             id,
             clipboard,
             state: Mutex::new(State {
-                vt: Vt::new(80, 24, Theme::default(), SCROLLBACK),
+                vt: Vt::new(80, 24, with_prefs(|prefs| prefs.map(|prefs| prefs.theme.clone())).unwrap_or_default(), SCROLLBACK),
                 metrics: None,
                 padding: 0,
                 cells: Vec::new(),
                 cursor_line: None,
+                predict: Predict::default(),
+                matches: Vec::new(),
+                current: None,
                 selecting: false,
                 reported: None,
                 last_click: None,
@@ -98,6 +182,11 @@ impl TerminalSession {
             link: Mutex::new(Link { transport: None, pending: Vec::new() }),
             invalidator,
         })
+    }
+
+    /// Turns local echo on, for sessions on another machine.
+    pub fn set_predictive(&self, enabled: bool) {
+        self.state().predict.enabled = enabled;
     }
 
     /// Connects the transport and sends what the emulator already answered: a transport may
@@ -204,6 +293,15 @@ impl TerminalSession {
         let modes = state.vt.modes();
         let mods = key_mods(event.mods);
         let button = event.button.clamp(0, 2) as u8;
+        // Ctrl+click opens a link under the pointer, even in programs that take the mouse.
+        if mods.ctrl && button == 0 {
+            let line = hit.line as i32 - state.vt.display_offset() as i32;
+            if let Some(url) = url_at(&state.vt.grid_chars(line), hit.column) {
+                drop(state);
+                events::emit(json!({ "type": "session.openUrl", "url": url }));
+                return;
+            }
+        }
         if modes.mouse() && !mods.shift {
             state.reported = Some(button);
             let bytes = encode_mouse(MouseAction::Press(button), hit.column, hit.line, mods, modes.sgr_mouse).unwrap_or_default();
@@ -271,7 +369,32 @@ impl TerminalSession {
 
 impl Sink for TerminalSession {
     fn data(&self, bytes: &[u8]) {
-        let events = self.state().vt.feed(bytes);
+        let events = {
+            let mut state = self.state();
+            let events = state.vt.feed(bytes);
+            // Check what the server drew against what was predicted.
+            if !state.predict.pending.is_empty() {
+                let mut cells = std::mem::take(&mut state.cells);
+                let mut keep = Vec::new();
+                let mut wrong = false;
+                for (line, column, ch) in std::mem::take(&mut state.predict.pending) {
+                    state.vt.row(line, &mut cells);
+                    match cells.get(column).map(|cell| cell.ch) {
+                        Some(found) if found == ch => state.predict.trusted = true,
+                        Some(' ' | '\0') | None => keep.push((line, column, ch)),
+                        Some(_) => wrong = true,
+                    }
+                }
+                state.cells = cells;
+                state.predict.pending = keep;
+                if wrong {
+                    state.predict.withdraw(false);
+                } else if state.predict.pending.is_empty() {
+                    state.predict.since = None;
+                }
+            }
+            events
+        };
         for event in events {
             match event {
                 VtEvent::Reply(reply) => self.send(&reply),
@@ -332,6 +455,28 @@ impl Session for TerminalSession {
             return self.invalidator.invalidate();
         }
         let Some(bytes) = encode_key(event.key, mods, modes.application_cursor) else { return };
+        if state.predict.enabled {
+            let mut chars = event.key.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) if !mods.ctrl && !mods.alt && !ch.is_control() && !modes.alternate_screen => {
+                    let (columns, _) = state.vt.size();
+                    let next = state.predict.pending.last().map(|&(line, column, _)| (line, column + 1)).or_else(|| state.vt.cursor().map(|cursor| (cursor.line, cursor.column)));
+                    if let Some((line, column)) = next.filter(|&(_, column)| column < columns) {
+                        state.predict.pending.push((line, column, ch));
+                        state.predict.since.get_or_insert_with(Instant::now);
+                        state.predict.stale.push(line);
+                    }
+                }
+                // Erasing is ordinary line editing: it keeps the trust the echo earned.
+                _ if event.key == "Backspace" => {
+                    if let Some((line, _, _)) = state.predict.pending.pop() {
+                        state.predict.stale.push(line);
+                    }
+                }
+                // Enter, arrows, control keys: the next line may be a password prompt.
+                _ => state.predict.withdraw(false),
+            }
+        }
         // Typing returns to the live screen and drops the selection.
         state.vt.scroll_to_bottom();
         state.vt.clear_selection();
@@ -370,6 +515,65 @@ impl Session for TerminalSession {
         (0..state.vt.size().1).map(|line| state.vt.row_text(line)).collect()
     }
 
+    fn search(&self, query: &str) -> usize {
+        let mut state = self.state();
+        let needle: Vec<char> = query.to_lowercase().chars().collect();
+        let mut found = Vec::new();
+        if !needle.is_empty() {
+            let (_, lines) = state.vt.size();
+            for line in -(state.vt.history() as i32)..lines as i32 {
+                let chars: Vec<char> = state.vt.grid_chars(line).iter().map(|ch| ch.to_lowercase().next().unwrap_or(*ch)).collect();
+                let mut column = 0;
+                while column + needle.len() <= chars.len() {
+                    if chars[column..column + needle.len()] == needle[..] {
+                        found.push((line, column, needle.len()));
+                        column += needle.len();
+                    } else {
+                        column += 1;
+                    }
+                }
+            }
+        }
+        let count = found.len();
+        state.current = count.checked_sub(1);
+        state.matches = found;
+        if let Some(&(line, _, _)) = state.current.and_then(|index| state.matches.get(index)) {
+            state.vt.reveal(line);
+        }
+        state.vt.mark_dirty();
+        drop(state);
+        self.invalidator.invalidate();
+        count
+    }
+
+    fn search_step(&self, backwards: bool) {
+        let mut state = self.state();
+        let count = state.matches.len();
+        if count == 0 {
+            return;
+        }
+        let index = match (state.current, backwards) {
+            (Some(index), true) => (index + count - 1) % count,
+            (Some(index), false) => (index + 1) % count,
+            (None, _) => count - 1,
+        };
+        state.current = Some(index);
+        let line = state.matches[index].0;
+        state.vt.reveal(line);
+        state.vt.mark_dirty();
+        drop(state);
+        self.invalidator.invalidate();
+    }
+
+    fn search_clear(&self) {
+        let mut state = self.state();
+        state.matches.clear();
+        state.current = None;
+        state.vt.mark_dirty();
+        drop(state);
+        self.invalidator.invalidate();
+    }
+
     fn close(&self) {
         if let Some(transport) = self.link().transport.take() {
             transport.close();
@@ -379,14 +583,26 @@ impl Session for TerminalSession {
 
 impl Scene for TerminalSession {
     fn layout(&self, width: u32, height: u32, scale: f32, fonts: &mut Fonts) {
-        let metrics = fonts.metrics(FONT_SIZE * scale);
-        let padding = (PADDING * scale).round() as i32;
+        // Whole device pixels: hinting snaps stems to the pixel grid only at integral sizes, and a
+        // fractional size (13 px at 125% is 16.25) leaves every stem smeared across two pixels.
+        let metrics = fonts.metrics((font_size() * scale).round());
+        let padding = (with_prefs(|prefs| prefs.map_or(PADDING, |prefs| prefs.padding)) * scale).round() as i32;
         let columns = ((width as i32 - 2 * padding) / metrics.cell_w as i32).max(1) as usize;
         let lines = ((height as i32 - 2 * padding) / metrics.cell_h as i32).max(1) as usize;
         {
             let mut state = self.state();
             state.metrics = Some(metrics);
             state.padding = padding;
+            if let Some(theme) = with_prefs(|prefs| prefs.map(|prefs| prefs.theme.clone())) && state.vt.theme() != theme {
+                state.vt.set_theme(theme);
+            }
+            // A hidden tab lays out at a sliver of a size. Shrinking the shell to a few cells
+            // and back made ConPTY and the remote shell rewrap and repaint the screen at the
+            // wrong places (cut prompts, text in the middle, the cursor off its prompt), so
+            // such sizes are ignored, and so is a layout that changes nothing.
+            if columns < 10 || lines < 3 || state.vt.size() == (columns, lines) {
+                return;
+            }
             state.vt.resize(columns, lines, metrics.cell_w as u16, metrics.cell_h as u16);
         }
         if let Some(transport) = &self.link().transport {
@@ -400,7 +616,12 @@ impl Scene for TerminalSession {
         let metrics = state.metrics?;
         let theme = state.vt.theme();
         let (_, line_count) = state.vt.size();
-        let cursor = state.vt.cursor();
+        let cursor = state.vt.cursor().map(|mut cursor| {
+            if cursor.shape == CursorShape::Block && let Some(shape) = with_prefs(|prefs| prefs.and_then(|prefs| prefs.cursor)) {
+                cursor.shape = shape;
+            }
+            cursor
+        });
         // Always taken, so the grid starts counting changes again from this frame.
         let damage = state.vt.take_damage();
         let everything = full || damage == Damage::Full;
@@ -419,14 +640,48 @@ impl Scene for TerminalSession {
             }
         }
         state.cursor_line = cursor.map(|cursor| cursor.line);
+        // A server that stays silent for a second is not echoing: stop guessing.
+        if state.predict.since.is_some_and(|since| since.elapsed() > Duration::from_secs(1)) {
+            state.predict.withdraw(false);
+        }
+        for line in std::mem::take(&mut state.predict.stale) {
+            if line < line_count && !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
         let mut cells = std::mem::take(&mut state.cells);
         let mut dirty = Rect::default();
         for &line in &lines {
             state.vt.row(line, &mut cells);
+            if !state.matches.is_empty() {
+                let grid_line = line as i32 - state.vt.display_offset() as i32;
+                for (index, &(match_line, start, length)) in state.matches.iter().enumerate() {
+                    if match_line == grid_line {
+                        let tint = if state.current == Some(index) { theme.cursor } else { theme.selection };
+                        for cell in cells.iter_mut().skip(start).take(length) {
+                            cell.bg = tint;
+                            if state.current == Some(index) {
+                                cell.fg = theme.background;
+                            }
+                        }
+                    }
+                }
+            }
             let on_line = cursor.filter(|cursor| cursor.line == line);
             dirty = dirty.union(paint_line(canvas, fonts, &metrics, &theme, state.padding, line, &cells, on_line));
         }
         state.cells = cells;
+        if state.predict.trusted && !state.predict.pending.is_empty() {
+            let (cell_w, cell_h) = (metrics.cell_w as i32, metrics.cell_h as i32);
+            for &(line, column, ch) in &state.predict.pending {
+                let (x, y) = (state.padding + column as i32 * cell_w, state.padding + line as i32 * cell_h);
+                let area = Rect::new(x, y, cell_w, cell_h);
+                canvas.fill_rect(area, rgb(theme.background));
+                fonts.draw(canvas, ch, GlyphStyle::default(), &metrics, x, y, rgb(theme.foreground), area);
+                canvas.fill_rect(Rect::new(x, y + metrics.underline_y, cell_w, metrics.stroke), rgb(theme.cursor));
+                dirty = dirty.union(area);
+            }
+        }
         if everything {
             Some(canvas.bounds())
         } else if dirty.is_empty() {
@@ -446,6 +701,26 @@ fn drawable(cell: &CellView) -> bool {
 }
 
 /// Paints one grid line across the full canvas width and returns the strip it covered.
+/// The http(s) URL that covers `column` in a row of characters, if any.
+fn url_at(chars: &[char], column: usize) -> Option<String> {
+    let text: String = chars.iter().map(|&ch| if ch == '\0' { ' ' } else { ch }).collect();
+    let is_url_char = |ch: char| !ch.is_whitespace() && !matches!(ch, '"' | '\'' | '<' | '>' | '`' | '|');
+    for scheme in ["https://", "http://"] {
+        let mut from = 0;
+        while let Some(offset) = text[from..].find(scheme) {
+            let start = from + offset;
+            let end = text[start..].char_indices().find(|&(_, ch)| !is_url_char(ch)).map_or(text.len(), |(index, _)| start + index);
+            let url = text[start..end].trim_end_matches(['.', ',', ')', ']', ';', ':']);
+            let (first, last) = (text[..start].chars().count(), text[..start].chars().count() + url.chars().count());
+            if (first..last).contains(&column) {
+                return Some(url.to_owned());
+            }
+            from = end.max(start + 1);
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_line(
     canvas: &mut Canvas,
@@ -668,6 +943,37 @@ mod tests {
         fixture.feed(b"\x1b[?2004h");
         fixture.session.text("x\x1b[201~y");
         assert_eq!(fixture.program.take(), "\x1b[200~xy\x1b[201~");
+    }
+
+    #[test]
+    fn search_counts_matches_and_links_are_found_under_the_pointer() {
+        let fixture = Fixture::new();
+        fixture.session.data(b"foo bar FOO see https://example.com/a?b=1.\r\n");
+        assert_eq!(fixture.session.search("foo"), 2);
+        fixture.session.search_step(false);
+        fixture.session.search_clear();
+        assert_eq!(fixture.session.state().matches.len(), 0);
+        let chars: Vec<char> = "see https://example.com/a?b=1. ok".chars().collect();
+        assert_eq!(url_at(&chars, 10).as_deref(), Some("https://example.com/a?b=1"));
+        assert_eq!(url_at(&chars, 1), None);
+    }
+
+    #[test]
+    fn local_echo_shows_only_once_the_server_has_echoed_and_never_after_enter() {
+        let fixture = Fixture::new();
+        fixture.session.set_predictive(true);
+        let predicted = |fixture: &Fixture| fixture.session.state().predict.pending.len();
+        // Untrusted: recorded to learn from, not drawn.
+        fixture.key("a", 0);
+        assert!(!fixture.session.state().predict.trusted);
+        fixture.session.data(b"a");
+        assert!(fixture.session.state().predict.trusted && predicted(&fixture) == 0, "the echo confirmed it");
+        fixture.key("b", 0);
+        fixture.key("c", 0);
+        assert_eq!(predicted(&fixture), 2);
+        fixture.key("Enter", 0);
+        let state = fixture.session.state();
+        assert!(!state.predict.trusted && state.predict.pending.is_empty(), "a new line may be a password prompt");
     }
 
     #[test]

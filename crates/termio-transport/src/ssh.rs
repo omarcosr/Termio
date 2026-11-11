@@ -35,6 +35,8 @@ pub enum Auth {
     Password(Zeroizing<String>),
     /// OpenSSH or PEM private key text.
     Key { private: Zeroizing<String>, passphrase: Option<Zeroizing<String>> },
+    /// The keys the running ssh-agent holds (OpenSSH's pipe on Windows, $SSH_AUTH_SOCK elsewhere).
+    Agent,
 }
 
 #[derive(Clone)]
@@ -151,6 +153,14 @@ async fn authenticate(handle: &mut Handle<Client>, target: &Target) -> Result<()
                 let hash = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
                 handle.authenticate_publickey(&target.user, PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await
             }
+            Auth::Agent => {
+                match agent_sign_in(handle, &target.user).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => last = "the ssh-agent's keys were not accepted".into(),
+                    Err(error) => last = error,
+                }
+                continue;
+            }
         };
         match result {
             Ok(AuthResult::Success) => return Ok(()),
@@ -158,12 +168,29 @@ async fn authenticate(handle: &mut Handle<Client>, target: &Target) -> Result<()
                 last = match method {
                     Auth::Password(_) => "wrong password".into(),
                     Auth::Key { .. } => "the server did not accept the key".into(),
+                    Auth::Agent => "the ssh-agent's keys were not accepted".into(),
                 }
             }
             Err(error) => return Err(fail("authentication", error)),
         }
     }
     Err(last)
+}
+
+/// Tries every key the running ssh-agent offers. `Ok(false)` when none was accepted.
+async fn agent_sign_in(handle: &mut Handle<Client>, user: &str) -> Result<bool, String> {
+    #[cfg(windows)]
+    let mut agent = russh::keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await.map_err(|error| fail("ssh-agent", error))?;
+    #[cfg(unix)]
+    let mut agent = russh::keys::agent::client::AgentClient::connect_env().await.map_err(|error| fail("ssh-agent", error))?;
+    let identities = agent.request_identities().await.map_err(|error| fail("ssh-agent", error))?;
+    for identity in identities {
+        let result = handle.authenticate_publickey_with(user, identity.public_key().into_owned(), None, &mut agent).await;
+        if let Ok(AuthResult::Success) = result {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Connects to `target`, through its jump host if it has one. Returns the session handle and

@@ -179,6 +179,27 @@ pub fn diff(previous: &[Row], next: &[Row]) -> Vec<(u16, Row)> {
 
 /// Turns a frame into the escape sequences that draw it on an xterm-compatible terminal, so a
 /// client can feed it to its own emulator and keep its renderer unchanged.
+/// The agent's emulator colours: its default foreground and background and ANSI 0–15. Replay
+/// turns them back into "default" and palette codes, so the client's colour scheme applies to a
+/// resumable session too instead of the agent's fixed RGB values.
+pub const AGENT_FOREGROUND: u32 = 0xd8dee9;
+pub const AGENT_BACKGROUND: u32 = 0x101216;
+pub const AGENT_ANSI: [u32; 16] = [
+    0x1c1f26, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf, 0x5c6370, 0xff7b86, 0xb1e18b, 0xf2d08a, 0x7cc0ff, 0xd99cf0, 0x6fd3e0, 0xffffff,
+];
+
+/// SGR parameters for one colour: `base` 30 for foreground, 40 for background.
+fn sgr_color(out: &mut Vec<u8>, color: u32, base: u32, default: u32) {
+    if color == default {
+        let _ = write!(out, ";{}", base + 9);
+    } else if let Some(index) = AGENT_ANSI.iter().position(|&ansi| ansi == color) {
+        let code = if index < 8 { base + index as u32 } else { base + 60 + index as u32 - 8 };
+        let _ = write!(out, ";{code}");
+    } else {
+        let _ = write!(out, ";{};2;{};{};{}", base + 8, color >> 16, (color >> 8) & 0xff, color & 0xff);
+    }
+}
+
 pub fn replay(frame: &Frame) -> Vec<u8> {
     let mut out = Vec::with_capacity(frame.rows.len() * 96);
     // Hide the cursor while painting, so it never flickers through the rows.
@@ -189,16 +210,9 @@ pub fn replay(frame: &Frame) -> Vec<u8> {
     for (index, row) in &frame.rows {
         let _ = write!(out, "\x1b[{};1H\x1b[0m\x1b[2K", index + 1);
         for run in row {
-            let _ = write!(
-                out,
-                "\x1b[0;38;2;{};{};{};48;2;{};{};{}",
-                run.fg >> 16,
-                (run.fg >> 8) & 0xff,
-                run.fg & 0xff,
-                run.bg >> 16,
-                (run.bg >> 8) & 0xff,
-                run.bg & 0xff
-            );
+            out.extend_from_slice(b"\x1b[0");
+            sgr_color(&mut out, run.fg, 30, AGENT_FOREGROUND);
+            sgr_color(&mut out, run.bg, 40, AGENT_BACKGROUND);
             for (bit, code) in [(1, "1"), (2, "3"), (4, "4"), (8, "9")] {
                 if run.flags & bit != 0 {
                     out.push(b';');
@@ -271,6 +285,8 @@ mod tests {
         let text = String::from_utf8(replay(&frame)).unwrap();
         assert!(text.contains("\x1b[3;1H"));
         assert!(text.contains("\x1b[0;38;2;255;0;0;48;2;0;0;0;1;4mhi"));
+        let themed = Frame { rows: vec![(0, vec![Run { text: "x".into(), fg: AGENT_ANSI[4], bg: AGENT_BACKGROUND, flags: 0 }])], ..frame.clone() };
+        assert!(String::from_utf8(replay(&themed)).unwrap().contains("\x1b[0;34;49mx"), "palette and default colours replay as codes");
         assert!(text.ends_with("\x1b[3;3H\x1b[?25h\x1b]0;xy\x07"), "{text:?}");
     }
 }

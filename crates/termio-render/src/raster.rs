@@ -9,7 +9,7 @@ use swash::zeno::{Angle, Format, Transform};
 use swash::{CacheKey, FontRef};
 
 /// Families tried in order when the user picked none (or theirs is missing).
-const MONOSPACE: &[&str] = &["Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono"];
+const MONOSPACE: &[&str] = &["Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Droid Sans Mono"];
 /// Faces tried first for characters the terminal font lacks, before scanning every font.
 const FALLBACK: &[&str] = &[
     "Segoe UI Symbol",
@@ -53,6 +53,8 @@ pub struct FontMetrics {
 }
 
 pub struct Glyph {
+    /// `data` holds RGBA subpixel coverage (alpha unused) instead of one byte per pixel.
+    pub subpixel: bool,
     pub left: i32,
     pub top: i32,
     pub width: u32,
@@ -63,6 +65,11 @@ pub struct Glyph {
 }
 
 struct Face {
+    /// The font file and face index, for rasterizers that open files themselves (DirectWrite).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    file: Option<(std::path::PathBuf, u32)>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    emoji: bool,
     data: Arc<dyn AsRef<[u8]> + Send + Sync>,
     offset: u32,
     key: CacheKey,
@@ -92,6 +99,8 @@ pub struct Fonts {
     resolved: HashMap<(char, GlyphStyle), Option<Resolved>>,
     glyphs: HashMap<(usize, u16, u32, u8), Option<Glyph>>,
     scale: ScaleContext,
+    #[cfg(windows)]
+    dwrite: Option<crate::dwrite::DirectWrite>,
 }
 
 impl Fonts {
@@ -99,6 +108,16 @@ impl Fonts {
     pub fn new(family: Option<&str>) -> Self {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
+        // fontdb knows no Android font directories: without these the terminal had no font at
+        // all and drew only the cursor. Droid Sans Mono is the monospace face every Android ships.
+        #[cfg(target_os = "android")]
+        {
+            for dir in ["/system/fonts", "/product/fonts"] {
+                db.load_fonts_dir(dir);
+            }
+            db.set_monospace_family("Droid Sans Mono");
+            db.set_sans_serif_family("Roboto");
+        }
         Self::with_database(db, family)
     }
 
@@ -113,6 +132,8 @@ impl Fonts {
             resolved: HashMap::new(),
             glyphs: HashMap::new(),
             scale: ScaleContext::new(),
+            #[cfg(windows)]
+            dwrite: crate::dwrite::DirectWrite::new(),
         }
     }
 
@@ -133,7 +154,13 @@ impl Fonts {
         let (data, face_index) = unsafe { self.db.make_shared_face_data(id) }?;
         let font = FontRef::from_index((*data).as_ref(), face_index as usize)?;
         let (offset, key) = (font.offset, font.key);
-        self.faces.push(Face { data, offset, key });
+        let info = self.db.face(id);
+        let file = info.and_then(|info| match &info.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => Some((path.clone(), info.index)),
+            fontdb::Source::Binary(_) => None,
+        });
+        let emoji = info.is_some_and(|info| info.families.iter().any(|(name, _)| name.contains("Emoji")));
+        self.faces.push(Face { file, emoji, data, offset, key });
         self.loaded.insert(id, self.faces.len() - 1);
         Some(self.faces.len() - 1)
     }
@@ -157,6 +184,8 @@ impl Fonts {
         let id = self.db.query(&query)?;
         let info = self.db.face(id)?;
         let mut synthetic = 0;
+        // A font without a bold face keeps its regular weight: faked bold smears the stems of
+        // a hinted terminal font into blobs (`ls` colours are bold), and colour already marks it.
         if style.bold && info.weight.0 < 600 {
             synthetic |= SYNTHETIC_BOLD;
         }
@@ -249,14 +278,20 @@ impl Fonts {
     pub fn glyph(&mut self, ch: char, style: GlyphStyle, size: f32) -> Option<&Glyph> {
         let resolved = self.resolve(ch, style)?;
         let key = (resolved.face, resolved.glyph, (size * 64.0) as u32, resolved.synthetic);
+        #[cfg(windows)]
+        if !self.glyphs.contains_key(&key) && !self.faces[resolved.face].emoji
+            && let (Some(dwrite), Some((path, index))) = (self.dwrite.as_mut(), self.faces[resolved.face].file.as_ref())
+            && let Some(glyph) = dwrite.glyph(resolved.face, path, *index, resolved.glyph, size, false, resolved.synthetic & SYNTHETIC_ITALIC != 0)
+        {
+            self.glyphs.insert(key, Some(glyph));
+        }
         if !self.glyphs.contains_key(&key) {
             let font = self.faces[resolved.face].font();
             let mut scaler = self.scale.builder(font).size(size).hint(true).build();
             let mut render = Render::new(&[Source::ColorOutline(0), Source::ColorBitmap(StrikeWith::BestFit), Source::Outline]);
-            render.format(Format::Alpha);
-            if resolved.synthetic & SYNTHETIC_BOLD != 0 {
-                render.embolden(size / 28.0);
-            }
+            // Subpixel (ClearType-like) coverage: three samples per pixel, one for each of the
+            // RGB stripes of an LCD, triple the horizontal resolution of a grey mask.
+            render.format(Format::Subpixel);
             if resolved.synthetic & SYNTHETIC_ITALIC != 0 {
                 render.transform(Some(Transform::skew(Angle::from_degrees(12.0), Angle::from_degrees(0.0))));
             }
@@ -266,6 +301,7 @@ impl Fonts {
                 width: image.placement.width,
                 height: image.placement.height,
                 color: image.content == Content::Color,
+                subpixel: image.content == Content::SubpixelMask,
                 data: image.data,
             });
             self.glyphs.insert(key, glyph);
@@ -282,6 +318,8 @@ impl Fonts {
         let area = Rect::new(x + glyph.left, y + metrics.baseline - glyph.top, glyph.width as i32, glyph.height as i32);
         if glyph.color {
             canvas.draw_rgba(area, &glyph.data, clip);
+        } else if glyph.subpixel {
+            canvas.draw_subpixel(area, &glyph.data, color, clip);
         } else {
             canvas.draw_mask(area, &glyph.data, color, clip);
         }
@@ -302,6 +340,7 @@ mod tests {
         let glyph = fonts.glyph('A', GlyphStyle::default(), 16.0).expect("the terminal font has an A");
         assert!(glyph.width > 0 && glyph.height > 0 && !glyph.color);
         assert!(glyph.data.iter().any(|&coverage| coverage > 0));
+        assert!(!glyph.subpixel || glyph.data.len() == glyph.width as usize * glyph.height as usize * 4);
         assert!(fonts.glyph(' ', GlyphStyle::default(), 16.0).is_none_or(|space| space.data.iter().all(|&c| c == 0)));
         assert!(fonts.glyph('A', GlyphStyle { bold: true, italic: true }, 16.0).is_some());
     }

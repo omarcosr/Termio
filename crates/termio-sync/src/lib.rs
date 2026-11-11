@@ -1,15 +1,13 @@
 //! Vault sync through an S3-compatible bucket (Cloudflare R2), with no server of our own.
 //!
-//! Layout under `termio/v1/`:
-//! - `header`: the key envelope (the data key wrapped by the password) and a key check.
-//!   Created once with `If-None-Match: *`, so two devices can never race two keys into it.
-//! - `manifest`: sealed map of record id → stamp and blob name. Replaced with `If-Match` on its
-//!   ETag, which R2 evaluates atomically: a concurrent writer gets 412, pulls, merges and retries.
-//! - `records/<random>`: one sealed record version each, never rewritten.
+//! The bucket holds a single object, `termio.vault`: the key envelope (the data key wrapped by
+//! the password), a key check, and every record sealed together with the data key. A sync reads
+//! it, merges record by record (newest stamp wins, deletions travel as tombstones), and writes it
+//! back with `If-Match` on its ETag, which R2 evaluates atomically: a device that lost a race gets
+//! 412, reads the newer copy, merges again and retries. The first write uses `If-None-Match: *`,
+//! so two devices can never race two different vaults into one bucket.
 //!
-//! Everything but the header is encrypted with the vault's data key, and blob names are random,
-//! so the bucket learns nothing about hosts or their number beyond blob counts. A change to one
-//! host uploads about a kilobyte plus the manifest, which matters on a slow link.
+//! Only the envelope is outside the seal, and it opens only with the password.
 
 pub mod cloudflare;
 mod r2;
@@ -20,12 +18,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
-use termio_vault::{KeyEnvelope, Record, Stamp, Vault, VaultError};
+use termio_vault::{KeyEnvelope, Record, Vault, VaultError};
 
-const HEADER: &str = "termio/v1/header";
-const MANIFEST: &str = "termio/v1/manifest";
-const RECORDS: &str = "termio/v1/records/";
+/// The object sync keeps in the bucket when no name is given.
+pub const VAULT: &str = "termio.vault";
+
+/// The bucket key of a named vault: `<name>.vault`.
+pub fn vault_key(name: &str) -> String {
+    format!("{}.vault", name.trim().trim_end_matches(".vault"))
+}
 const KEY_CHECK: &[u8] = b"termio key check v1";
+const RECORDS_AAD: &[u8] = b"termio records v1";
 const RETRIES: usize = 6;
 
 #[derive(Debug)]
@@ -36,7 +39,7 @@ pub enum SyncError {
     Empty,
     Vault(VaultError),
     Store(String),
-    /// Kept losing the race for the manifest.
+    /// Kept losing the race for the object.
     Contended,
 }
 
@@ -82,6 +85,12 @@ pub trait Store: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, StoreError>;
     /// Writes the object and returns its new ETag.
     fn put(&self, key: &str, body: &[u8], condition: Condition) -> Result<String, StoreError>;
+    /// The key of the vault object this store syncs.
+    fn vault_key(&self) -> String {
+        VAULT.to_owned()
+    }
+    /// Every `.vault` object at the top of the bucket.
+    fn list_vaults(&self) -> Result<Vec<String>, StoreError>;
 }
 
 fn store(error: StoreError) -> SyncError {
@@ -91,20 +100,17 @@ fn store(error: StoreError) -> SyncError {
     }
 }
 
+/// The bucket's `termio.vault`.
 #[derive(Serialize, Deserialize)]
-struct Header {
+struct Remote {
+    version: u32,
     envelope: KeyEnvelope,
     #[serde(with = "hex::serde")]
     check: Vec<u8>,
+    /// Every record, as one sealed JSON array.
+    #[serde(with = "hex::serde")]
+    records: Vec<u8>,
 }
-
-#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
-struct Entry {
-    stamp: Stamp,
-    blob: String,
-}
-
-type Manifest = BTreeMap<String, Entry>;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
@@ -114,111 +120,78 @@ pub struct Report {
     pub pushed: usize,
 }
 
-fn blob_name() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("the operating system's random source");
-    format!("{RECORDS}{}", hex::encode(bytes))
+fn read_remote(store: &dyn Store) -> Result<Option<(Remote, String)>, SyncError> {
+    let key = store.vault_key();
+    let Some((body, etag)) = store.get(&key).map_err(self::store)? else { return Ok(None) };
+    let remote = serde_json::from_slice(&body).map_err(|_| SyncError::Store(format!("unreadable {key}")))?;
+    Ok(Some((remote, etag)))
+}
+
+fn remote_records(vault: &Vault, remote: &Remote) -> Result<Vec<Record>, SyncError> {
+    if vault.unseal(&remote.check, KEY_CHECK).is_err() {
+        return Err(SyncError::OtherVault);
+    }
+    let plain = vault.unseal(&remote.records, RECORDS_AAD)?;
+    serde_json::from_slice(&plain).map_err(|_| SyncError::Store("unreadable records".into()))
+}
+
+fn encode(vault: &Vault) -> Vec<u8> {
+    let records: Vec<&Record> = vault.all().collect();
+    let remote = Remote {
+        version: 1,
+        envelope: vault.envelope().clone(),
+        check: vault.seal(KEY_CHECK, KEY_CHECK),
+        records: vault.seal(&serde_json::to_vec(&records).expect("records serialize"), RECORDS_AAD),
+    };
+    serde_json::to_vec(&remote).expect("the vault object serializes")
 }
 
 /// The envelope of the vault in the bucket: what a new device opens with the password.
 pub fn fetch_envelope(store: &dyn Store) -> Result<KeyEnvelope, SyncError> {
-    let (body, _) = store.get(HEADER).map_err(self::store)?.ok_or(SyncError::Empty)?;
-    let header: Header = serde_json::from_slice(&body).map_err(|_| SyncError::Store("unreadable header".into()))?;
-    Ok(header.envelope)
-}
-
-/// Makes sure the bucket holds this vault's header, creating it on first sync.
-fn claim(vault: &Vault, store: &dyn Store) -> Result<(), SyncError> {
-    for _ in 0..2 {
-        match store.get(HEADER).map_err(self::store)? {
-            Some((body, _)) => {
-                let header: Header = serde_json::from_slice(&body).map_err(|_| SyncError::Store("unreadable header".into()))?;
-                return match vault.unseal(&header.check, KEY_CHECK) {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(SyncError::OtherVault),
-                };
-            }
-            None => {
-                let header = Header { envelope: vault.envelope().clone(), check: vault.seal(KEY_CHECK, KEY_CHECK) };
-                match store.put(HEADER, &serde_json::to_vec(&header).expect("header serializes"), Condition::Absent) {
-                    Ok(_) => return Ok(()),
-                    // Another device created it first: check it is ours.
-                    Err(StoreError::PreconditionFailed) => continue,
-                    Err(error) => return Err(self::store(error)),
-                }
-            }
-        }
-    }
-    Err(SyncError::Contended)
+    Ok(read_remote(store)?.ok_or(SyncError::Empty)?.0.envelope)
 }
 
 /// Publishes this vault's envelope after a password change, so other devices take it.
-pub fn publish_envelope(vault: &Vault, store: &dyn Store) -> Result<(), SyncError> {
-    claim(vault, store)?;
-    let header = Header { envelope: vault.envelope().clone(), check: vault.seal(KEY_CHECK, KEY_CHECK) };
-    store.put(HEADER, &serde_json::to_vec(&header).expect("header serializes"), Condition::None).map_err(self::store)?;
-    Ok(())
-}
-
-fn read_manifest(vault: &Vault, store: &dyn Store) -> Result<(Manifest, Option<String>), SyncError> {
-    match store.get(MANIFEST).map_err(self::store)? {
-        None => Ok((Manifest::new(), None)),
-        Some((body, etag)) => {
-            let plain = vault.unseal(&body, MANIFEST.as_bytes())?;
-            let manifest = serde_json::from_slice(&plain).map_err(|_| SyncError::Store("unreadable manifest".into()))?;
-            Ok((manifest, Some(etag)))
-        }
-    }
+pub fn publish_envelope(vault: &mut Vault, store: &dyn Store) -> Result<(), SyncError> {
+    sync_with(vault, store, true).map(|_| ())
 }
 
 /// Two-way sync: takes newer records from the bucket, uploads newer local ones, and saves the
 /// vault. Safe to run from several devices at once.
 pub fn sync(vault: &mut Vault, store: &dyn Store) -> Result<Report, SyncError> {
-    claim(vault, store)?;
-    let mut report = Report::default();
+    sync_with(vault, store, false)
+}
+
+fn sync_with(vault: &mut Vault, store: &dyn Store, rewrite: bool) -> Result<Report, SyncError> {
     for _ in 0..RETRIES {
-        let (mut manifest, etag) = read_manifest(vault, store)?;
-
-        // Pull what is newer there.
-        for (id, entry) in &manifest {
-            if vault.all().any(|record| &record.id == id && record.stamp >= entry.stamp) {
-                continue;
+        let mut report = Report::default();
+        let (condition, outgoing) = match read_remote(store)? {
+            None => (Condition::Absent, vault.all().count()),
+            Some((remote, etag)) => {
+                let theirs = remote_records(vault, &remote)?;
+                // Pull what is newer there.
+                for record in &theirs {
+                    if !vault.all().any(|mine| mine.id == record.id && mine.stamp >= record.stamp) {
+                        vault.merge(record.clone());
+                        report.pulled += 1;
+                    }
+                }
+                // Push what is newer here.
+                let outgoing = vault.all().filter(|mine| !theirs.iter().any(|record| record.id == mine.id && record.stamp >= mine.stamp)).count();
+                (Condition::Matches(etag), outgoing)
             }
-            let Some((sealed, _)) = store.get(&entry.blob).map_err(self::store)? else {
-                return Err(SyncError::Store(format!("missing record blob {}", entry.blob)));
-            };
-            let plain = vault.unseal(&sealed, entry.blob.as_bytes())?;
-            let record: Record = serde_json::from_slice(&plain).map_err(|_| SyncError::Store("unreadable record".into()))?;
-            vault.merge(record);
-            report.pulled += 1;
-        }
-
-        // Push what is newer here.
-        let outgoing: Vec<Record> = vault
-            .all()
-            .filter(|record| manifest.get(&record.id).is_none_or(|entry| record.stamp > entry.stamp))
-            .cloned()
-            .collect();
-        if outgoing.is_empty() {
+        };
+        if outgoing == 0 && !rewrite && condition != Condition::Absent {
             vault.save()?;
             return Ok(report);
         }
-        for record in &outgoing {
-            let blob = blob_name();
-            let sealed = vault.seal(&serde_json::to_vec(record).expect("records serialize"), blob.as_bytes());
-            store.put(&blob, &sealed, Condition::Absent).map_err(self::store)?;
-            manifest.insert(record.id.clone(), Entry { stamp: record.stamp.clone(), blob });
-        }
-        let sealed = vault.seal(&serde_json::to_vec(&manifest).expect("manifest serializes"), MANIFEST.as_bytes());
-        let condition = etag.map_or(Condition::Absent, Condition::Matches);
-        match store.put(MANIFEST, &sealed, condition) {
+        match store.put(&store.vault_key(), &encode(vault), condition) {
             Ok(_) => {
-                report.pushed += outgoing.len();
+                report.pushed = outgoing;
                 vault.save()?;
                 return Ok(report);
             }
-            // Someone else moved the manifest: start over from theirs. The blobs uploaded
-            // above are orphans and cost a few bytes.
+            // Another device wrote first: merge its copy and try again.
             Err(StoreError::PreconditionFailed) => {}
             Err(error) => return Err(self::store(error)),
         }
@@ -244,6 +217,10 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
+    fn list_vaults(&self) -> Result<Vec<String>, StoreError> {
+        Ok(self.keys().into_iter().filter(|key| key.ends_with(".vault") && !key.contains('/')).collect())
+    }
+
     fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, StoreError> {
         Ok(self.objects.lock().unwrap().get(key).map(|(body, version)| (body.clone(), format!("\"{version}\""))))
     }
@@ -324,6 +301,18 @@ mod tests {
     }
 
     #[test]
+    fn the_bucket_holds_one_object() {
+        let dir = Dir::new("single");
+        let bucket = MemoryStore::default();
+        let (mut a, _) = pair(&dir, &bucket);
+        for name in ["a", "b", "c"] {
+            a.put("host", None, json!({ "name": name })).unwrap();
+        }
+        sync(&mut a, &bucket).unwrap();
+        assert_eq!(bucket.keys(), [VAULT]);
+    }
+
+    #[test]
     fn the_bucket_never_sees_names_or_secrets() {
         let dir = Dir::new("opaque");
         let bucket = MemoryStore::default();
@@ -374,7 +363,7 @@ mod tests {
         assert!(names(&a).is_empty());
     }
 
-    /// A store where another device writes the manifest between our read and our write, once.
+    /// A store where another device writes the vault between our read and our write, once.
     struct Racing<'a> {
         inner: &'a MemoryStore,
         rival: Mutex<Option<Vault>>,
@@ -384,8 +373,11 @@ mod tests {
         fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, StoreError> {
             self.inner.get(key)
         }
+        fn list_vaults(&self) -> Result<Vec<String>, StoreError> {
+            self.inner.list_vaults()
+        }
         fn put(&self, key: &str, body: &[u8], condition: Condition) -> Result<String, StoreError> {
-            if key == MANIFEST && let Some(mut rival) = self.rival.lock().unwrap().take() {
+            if key == VAULT && let Some(mut rival) = self.rival.lock().unwrap().take() {
                 sync(&mut rival, self.inner).unwrap();
             }
             self.inner.put(key, body, condition)
@@ -393,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_race_for_the_manifest_retries_and_keeps_both_changes() {
+    fn a_lost_race_for_the_vault_retries_and_keeps_both_changes() {
         let dir = Dir::new("race");
         let bucket = MemoryStore::default();
         let (mut a, mut b) = pair(&dir, &bucket);
@@ -423,7 +415,7 @@ mod tests {
         let (mut a, _) = pair(&dir, &bucket);
         a.put("host", None, json!({ "name": "kept" })).unwrap();
         a.change_password_with("new", FAST).unwrap();
-        publish_envelope(&a, &bucket).unwrap();
+        publish_envelope(&mut a, &bucket).unwrap();
         sync(&mut a, &bucket).unwrap();
         let mut c = Vault::join(&dir.file("c"), fetch_envelope(&bucket).unwrap(), "new").unwrap();
         sync(&mut c, &bucket).unwrap();

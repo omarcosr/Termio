@@ -8,6 +8,8 @@ mod dxgi;
 mod frames;
 mod presenter;
 mod raster;
+#[cfg(windows)]
+mod dwrite;
 
 pub use canvas::{Canvas, Rect, Rgb};
 pub use presenter::{PresentError, Presenter, SurfaceKind, open_presenter};

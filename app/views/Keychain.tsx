@@ -1,7 +1,8 @@
 import { Column, Row, Scroll, Text, TextArea, type VNode } from "@tarve/core";
+import { core } from "../core/plugin";
 import { generateKey, importKey, removeRecord, toast, ui } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { Action, Field, Hint, IconAction, Label, Segments, mono, relativeTime } from "../ui/kit";
+import { compact, gutter, Action, Field, Hint, IconAction, Label, Segments, mono, relativeTime } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
 const draft = { mode: "generate" as "generate" | "import", open: false, name: "", privateKey: "", passphrase: "" };
@@ -9,7 +10,7 @@ const draft = { mode: "generate" as "generate" | "import", open: false, name: ""
 function copy(text: string, what: string): void {
   // The core owns the system clipboard; a session-less copy goes through the same path.
   try {
-    Bun.spawnSync(process.platform === "win32" ? ["clip"] : ["sh", "-c", "wl-copy 2>/dev/null || xclip -selection clipboard"], { stdin: new TextEncoder().encode(text) });
+    core().call({ op: "clipboard.set", text });
     toast(`${what} copied`);
   } catch {
     toast("Could not reach the clipboard", "error");
@@ -55,7 +56,7 @@ function NewKey() {
 function Header({ title, count, action }: { title: string; count: number; action?: VNode | null }) {
   return (
     <Row align="center" justify="between" style={{ padding: { bottom: 4 } }}>
-      <Row gap={10} align="baseline">
+      <Row gap={10} align="center">
         <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>{title}</Text>
         <Text size={13} color={color.faint}>{String(count)}</Text>
       </Row>
@@ -67,9 +68,9 @@ function Header({ title, count, action }: { title: string; count: number; action
 export function Keychain() {
   return (
     <Scroll flex={1}>
-      <Column gap={16} style={{ padding: { top: 22, left: 28, right: 28, bottom: 28 }, maxWidth: 860 }}>
+      <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
         <Header title="Keychain" count={ui.keys.length} action={draft.open ? null : <Action tone="primary" icon="plus" label="New key" onClick={() => { draft.open = true; ui.error = undefined; }} />} />
-        <Text size={13} color={color.muted} style={{ lineHeight: 1.5, maxWidth: 620 }}>
+        <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
           Private keys stay inside the encrypted vault and are never shown again. Give servers the public half: add it to ~/.ssh/authorized_keys.
         </Text>
         {draft.open ? <NewKey /> : null}
@@ -80,13 +81,15 @@ export function Keychain() {
                 <Glyph name="key" size={16} color={color.accent} />
               </Row>
               <Column flex={1} gap={3} style={{ minWidth: 0 }}>
-                <Row gap={8} align="baseline">
-                  <Text size={13.5} weight={600} color={color.text}>{key.data.name}</Text>
-                  <Text size={11.5} color={color.faint}>{key.data.algorithm}</Text>
+                <Row gap={8} align="center">
+                  <Text size={13.5} weight={600} color={color.text} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", shrink: 1, minWidth: 0 }}>{key.data.name}</Text>
+                  <Text size={11.5} color={color.faint} style={{ whiteSpace: "nowrap", shrink: 0 }}>{key.data.algorithm}</Text>
                 </Row>
-                <Text size={12} color={color.muted} style={{ ...mono, userSelect: "text" }}>{key.data.fingerprint}</Text>
+                <Text size={12} color={color.muted} style={{ ...mono, userSelect: "text", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{key.data.fingerprint}</Text>
               </Column>
-              <Action icon="copy" label="Copy public key" onClick={() => copy(key.data.public, "Public key")} />
+              {compact()
+                ? <IconAction icon="copy" label="Copy public key" onClick={() => copy(key.data.public, "Public key")} />
+                : <Action icon="copy" label="Copy public key" onClick={() => copy(key.data.public, "Public key")} />}
               <IconAction icon="trash" label={`Delete ${key.data.name}`} onClick={() => removeRecord(key.id)} />
             </Row>
           ))}
@@ -100,20 +103,20 @@ export function Keychain() {
 export function KnownHosts() {
   return (
     <Scroll flex={1}>
-      <Column gap={16} style={{ padding: { top: 22, left: 28, right: 28, bottom: 28 }, maxWidth: 860 }}>
+      <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
         <Header title="Known hosts" count={ui.known.length} />
-        <Text size={13} color={color.muted} style={{ lineHeight: 1.5, maxWidth: 620 }}>
+        <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
           Server keys you trusted. Termio checks them on every connection and stops if one changes. Forget a key when a server is rebuilt on purpose.
         </Text>
         <Column gap={2} style={{ background: color.panel, radius: radius.panel, borderColor: color.line, borderWidth: 1, padding: 6 }}>
           {ui.known.map(known => (
-            <Row key={known.id} gap={14} align="center" style={{ padding: { left: 10, right: 6, top: 8, bottom: 8 }, radius: radius.control, hover: { background: color.raised } }}>
+            <Row key={known.id} gap={compact() ? 10 : 14} align="center" style={{ padding: { left: 10, right: 6, top: 8, bottom: 8 }, radius: radius.control, hover: { background: color.raised } }}>
               <Glyph name="shield" size={15} color={color.ok} />
               <Column flex={1} gap={2} style={{ minWidth: 0 }}>
-                <Text size={13} weight={600} color={color.text} style={mono}>{known.data.port === 22 ? known.data.host : `${known.data.host}:${known.data.port}`}</Text>
-                <Text size={11.5} color={color.faint} style={mono}>{`${known.data.algorithm}  ${known.data.fingerprint}`}</Text>
+                <Text size={13} weight={600} color={color.text} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{known.data.port === 22 ? known.data.host : `${known.data.host}:${known.data.port}`}</Text>
+                <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{`${known.data.algorithm}  ${known.data.fingerprint}`}</Text>
               </Column>
-              <Text size={11.5} color={color.faint}>{relativeTime(known.updated)}</Text>
+              {compact() ? null : <Text size={11.5} color={color.faint}>{relativeTime(known.updated)}</Text>}
               <IconAction icon="trash" label="Forget this key" onClick={() => removeRecord(known.id)} />
             </Row>
           ))}

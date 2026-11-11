@@ -1,10 +1,15 @@
 import { Column, Modal, Row, Text } from "@tarve/core";
 import { answerHostKey, ui, type HostKeyPrompt as Prompt } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { Action, mono } from "../ui/kit";
+import { Action, dialogWidth, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
 /** The server's key, asked about once; a changed key is an alarm, not a formality. */
+/** A fingerprint has no spaces: zero-width ones every 12 characters let it wrap in a narrow dialog. */
+function breakable(text: string): string {
+  return text.replace(/(.{12})/g, "$1\u200b");
+}
+
 export function HostKeyPrompt() {
   const prompt: Prompt | undefined = ui.prompts[0];
   if (!prompt) return null;
@@ -13,7 +18,7 @@ export function HostKeyPrompt() {
   return (
     <Modal
       open
-      width={460}
+      width={dialogWidth(460)}
       title={changed ? "This server's key changed" : "New server"}
       closeOnOverlay={false}
       onOpenChange={open => { if (!open) answerHostKey(prompt.request, false); }}
@@ -39,8 +44,8 @@ export function HostKeyPrompt() {
         )}
         <Column gap={6} style={{ padding: 12, background: color.canvas, radius: radius.control, borderColor: color.line, borderWidth: 1 }}>
           <Text size={11.5} weight={600} color={color.faint}>{prompt.algorithm}</Text>
-          <Text size={12.5} color={color.text} style={{ ...mono, userSelect: "text" }}>{prompt.fingerprint}</Text>
-          {changed ? <Text size={12} color={color.faint} style={mono}>{`was ${prompt.previous}`}</Text> : null}
+          <Text size={12.5} color={color.text} style={{ ...mono, userSelect: "text" }}>{breakable(prompt.fingerprint)}</Text>
+          {changed ? <Text size={12} color={color.faint} style={mono}>{breakable(`was ${prompt.previous}`)}</Text> : null}
         </Column>
       </Column>
     </Modal>

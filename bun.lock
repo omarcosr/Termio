@@ -5,7 +5,7 @@
     "": {
       "name": "termio",
       "dependencies": {
-        "@tarve/core": "^0.10.0",
+        "@tarve/core": "file:../tarve/dist/tarve-core-0.11.1.tgz",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -64,7 +64,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ZENoHJBxA20C2zFzh6AI4fT6RraMzjYw4xKWemRTRmRVtN9c5DcH9r/f2ihEkMjOW5eGgrwCslG/+Y/3bL+DHQ=="],
 
-    "@tarve/core": ["@tarve/core@0.10.0", "", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "os": [ "linux", "win32", ], "cpu": "x64", "bin": { "tarve": "dist/npm/cli.js" } }, "sha512-dM/p02YI5k8zno7PeW3/e0Iw5WhlIuuXT2j+iBcYWukhhOud17KMLXDzOxJWeLUmqeGQhvFPHFZpYcBkR9YSRg=="],
+    "@tarve/core": ["@tarve/core@../tarve/dist/tarve-core-0.11.1.tgz", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "bin": { "tarve": "./dist/npm/cli.js" } }, "sha512-1xKrygMvjr/u9hSUpjDPEWVdqfCrh0vvnAdRO8E1Nhy8xZxJQdVvT9MJiKdXSu0F171ctChlGbDSgSansCOTfQ=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 

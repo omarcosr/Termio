@@ -1,7 +1,7 @@
 import { Column, Pressable, Row, Scroll, Text, TextArea } from "@tarve/core";
 import { activeTab, broadcastSnippet, editSnippet, removeRecord, runSnippet, saveSnippet, ui, type SnippetData, type VaultRecord } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { Action, Field, Hint, IconAction, Label, mono } from "../ui/kit";
+import { gutter, Action, Field, Hint, IconAction, Label, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
 function SnippetRow({ snippet, canRun }: { snippet: VaultRecord<SnippetData>; canRun: boolean }) {
@@ -52,15 +52,15 @@ export function Snippets() {
   const canRun = activeTab()?.kind === "terminal" || ui.tabs.some(tab => tab.kind === "terminal");
   return (
     <Scroll flex={1}>
-      <Column gap={16} style={{ padding: { top: 22, left: 28, right: 28, bottom: 28 }, maxWidth: 860 }}>
+      <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
         <Row align="center" justify="between">
-          <Row gap={10} align="baseline">
+          <Row gap={10} align="center">
             <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>Snippets</Text>
             <Text size={13} color={color.faint}>{String(ui.snippets.length)}</Text>
           </Row>
           {ui.editingSnippet ? null : <Action tone="primary" icon="plus" label="New snippet" onClick={() => editSnippet()} />}
         </Row>
-        <Text size={13} color={color.muted} style={{ lineHeight: 1.5, maxWidth: 620 }}>
+        <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
           Commands you run often, synced with your vault. Run one from Ctrl K inside a terminal, or in every pane of a split at once.
         </Text>
         {ui.editingSnippet ? <Editor /> : null}

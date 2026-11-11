@@ -1,8 +1,36 @@
-import { Column, Input, Pressable, Row, Text, type InputType, type Style } from "@tarve/core";
+import { Column, Input, Pressable, Row, Text, viewport, type InputType, type Style } from "@tarve/core";
 import { Glyph, type IconId } from "./icons";
 import { color, font, radius } from "./tokens";
 
 export const mono: Style = { fontFamily: font.mono };
+
+/**
+ * A phone or a narrow window (Android hands the app the area between the system bars): under
+ * 720 px wide the layout drops side panels, fixed columns and desktop-only controls. Reading it
+ * inside a view re-renders that view on rotation or resize.
+ */
+export function compact(): boolean {
+  return viewport().width < 720;
+}
+
+/** A finger rather than a mouse: hover-only controls have to stay visible. */
+export function touch(): boolean {
+  return viewport().pointer === "coarse" || process.env.TERMIO_TOUCH === "1";
+}
+
+/** Android: no ssh-agent, no other programs' host files, no bundled termio-agent, no .exe shells. */
+export const ANDROID = (process.platform as string) === "android";
+export const WINDOWS = process.platform === "win32";
+
+/** The side padding of a page: tighter on a narrow screen. */
+export function gutter(): number {
+  return compact() ? 14 : 28;
+}
+
+/** A dialog width that leaves a margin on a narrow screen. */
+export function dialogWidth(wide: number): number {
+  return Math.max(240, Math.min(wide, viewport().width - 48));
+}
 
 export function Label({ children }: { children: string }) {
   return <Text size={12} weight={600} color={color.muted}>{children}</Text>;
@@ -12,7 +40,7 @@ export function Hint({ children, tone = "muted" }: { children: string; tone?: "m
   return <Text size={12} color={tone === "danger" ? color.danger : color.faint}>{children}</Text>;
 }
 
-const inputStyle: Style = {
+const inputStyle = (): Style => ({
   height: 34,
   background: color.canvas,
   borderColor: color.line,
@@ -23,7 +51,7 @@ const inputStyle: Style = {
   fontSize: 13,
   focus: { borderColor: color.accent, outlineWidth: 0 },
   hover: { borderColor: color.lineStrong },
-};
+});
 
 export function Field(props: {
   id?: string;
@@ -38,7 +66,7 @@ export function Field(props: {
   grow?: number;
 }) {
   return (
-    <Column gap={6} flex={props.grow}>
+    <Column gap={6} flex={props.grow} style={{ minWidth: 0 }}>
       <Label>{props.label}</Label>
       <Input
         id={props.id}
@@ -47,7 +75,7 @@ export function Field(props: {
         placeholder={props.placeholder}
         onChange={props.onChange}
         onSubmit={() => props.onSubmit?.()}
-        style={props.monospace ? { ...inputStyle, ...mono, fontSize: 12.5 } : inputStyle}
+        style={{ ...inputStyle(), minWidth: 0, ...(props.monospace ? { ...mono, fontSize: 12.5 } : {}) }}
       />
       {props.hint ? <Hint>{props.hint}</Hint> : null}
     </Column>
@@ -55,19 +83,20 @@ export function Field(props: {
 }
 
 export function TextField(props: { id?: string; value: string; onChange: (value: string) => void; onSubmit?: (value: string) => void; placeholder?: string; type?: InputType; style?: Style }) {
-  return <Input id={props.id} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle, ...props.style }} />;
+  return <Input id={props.id} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle(), ...props.style }} />;
 }
 
 type Tone = "primary" | "quiet" | "danger";
 
-const buttonTones: Record<Tone, Style> = {
+// A function, not a constant: the palette changes with the colour scheme.
+const buttonTones = (): Record<Tone, Style> => ({
   primary: { background: color.accent, foreground: color.accentInk, hover: { background: color.accentHover } },
   quiet: { background: color.raised, foreground: color.text, borderColor: color.line, borderWidth: 1, hover: { background: color.hover, borderColor: color.lineStrong } },
   danger: { background: "transparent", foreground: color.danger, borderColor: color.line, borderWidth: 1, hover: { background: color.dangerSoft, borderColor: color.danger } },
-};
+});
 
 export function Action(props: { label: string; onClick: () => void; tone?: Tone; icon?: IconId; disabled?: boolean; shortcut?: string }) {
-  const tone = buttonTones[props.tone ?? "quiet"];
+  const tone = buttonTones()[props.tone ?? "quiet"];
   const ink = String(tone.foreground);
   return (
     <Pressable
@@ -76,6 +105,7 @@ export function Action(props: { label: string; onClick: () => void; tone?: Tone;
       focusable
       style={{
         height: 34,
+        shrink: 0,
         padding: { left: 12, right: 12 },
         radius: radius.control,
         direction: "row",
@@ -88,21 +118,22 @@ export function Action(props: { label: string; onClick: () => void; tone?: Tone;
       }}
     >
       {props.icon ? <Glyph name={props.icon} size={15} color={ink} /> : null}
-      <Text size={13} weight={600} color={ink}>{props.label}</Text>
+      <Text size={13} weight={600} color={ink} style={{ whiteSpace: "nowrap" }}>{props.label}</Text>
       {props.shortcut ? <Text size={11} color={props.tone === "primary" ? color.accentInk : color.faint} style={mono}>{props.shortcut}</Text> : null}
     </Pressable>
   );
 }
 
-export function IconAction(props: { icon: IconId; label: string; onClick: () => void; size?: number; color?: string }) {
+export function IconAction(props: { icon: IconId; label: string; onClick: () => void; size?: number; color?: string; focusable?: boolean }) {
   return (
     <Pressable
       onClick={props.onClick}
-      focusable
+      focusable={props.focusable ?? true}
       control={{ role: "button", label: props.label }}
       style={{
         width: props.size ?? 30,
         height: props.size ?? 30,
+        shrink: 0,
         radius: radius.control,
         align: "center",
         justify: "center",

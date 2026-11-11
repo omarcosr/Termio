@@ -1,14 +1,20 @@
-import { Window, createApp, darkTheme } from "@tarve/core";
+import { Window, createApp, darkTheme, lightTheme } from "@tarve/core";
 import { core, termioCore, type KeyInput } from "./core/plugin";
 import {
   activate,
   activeTab,
+  answerHostKey,
+  connect,
+  reload,
   closePane,
   closeTab,
+  createVault,
   cycleTabs,
   dialogs,
   focusPane,
   focusedSession,
+  installAgent,
+  saveAppearance,
   listen,
   loadStatus,
   lockVault,
@@ -16,27 +22,51 @@ import {
   openLocal,
   setRenderer,
   split,
-  ui,
-} from "./state/store";
-import { color, font } from "./ui/tokens";
+  ui, closeTermSearch, openTermSearch, setTermQuery, stepTermSearch, reportFault } from "./state/store";
+import { color, font, isLight } from "./ui/tokens";
 import { Root } from "./views/Shell";
-import { forwardPointer, sessionOfNode } from "./views/TerminalPane";
+import { cancelPath } from "./views/Files";
+import { forwardPointer, imeKey, sessionOfIme, sessionOfNode } from "./views/TerminalPane";
 
 function App() {
   return (
-    <Window title="Termio" width={1240} height={780} theme={darkTheme} style={{ background: color.canvas, fontFamily: font.ui, foreground: color.text }}>
+    <Window title="Termio" width={1240} height={780} theme={isLight() ? lightTheme : darkTheme} style={{ background: color.canvas, fontFamily: font.ui, foreground: color.text }}>
       <Root />
     </Window>
   );
 }
 
-const app = createApp(App, { plugins: [termioCore], keyboardEvents: true, pointerEvents: true });
+// Errors nothing else caught open a dialog instead of ending the process (an unhandled rejection
+// in Bun exits, and the window went with it).
+process.on("unhandledRejection", reason => reportFault(reason, "rejection"));
+process.on("uncaughtException", error => reportFault(error, "exception"));
+const app = createApp(App, { plugins: [termioCore], keyboardEvents: true, pointerEvents: true, onError: event => reportFault(event.error, event.source) });
 await app.ready;
 setRenderer(() => app.update());
 dialogs.open = async () => (await app.openFilesDialog({ title: "Upload files" })) ?? [];
 dialogs.save = async name => (await app.saveFileDialog({ title: "Save as", fileName: name })) ?? undefined;
+dialogs.focus = id => app.focus(id);
+dialogs.pick = async (title, filters) => (await app.openFileDialog({ title, ...(filters.length ? { filters } : {}) })) ?? undefined;
 listen();
 loadStatus();
+// Smoke test of a built executable: TERMIO_SMOKE=1 with TERMIO_VAULT pointing at a scratch file
+// creates a vault there and opens a local terminal straight away.
+if (process.env.TERMIO_SMOKE) {
+  createVault("termio-smoke-test", "termio-smoke-test");
+  if (process.env.TERMIO_SMOKE_THEME) saveAppearance({ theme: process.env.TERMIO_SMOKE_THEME });
+  // TERMIO_SMOKE_SSH="user:password@host:port" opens an SSH session instead, trusting its key.
+  const ssh = /^([^:]+):([^@]+)@([^:]+):(\d+)$/.exec(process.env.TERMIO_SMOKE_SSH ?? "");
+  if (ssh) {
+    const agent = Boolean(process.env.TERMIO_SMOKE_AGENT);
+    const id = core().call<{ id: string }>({ op: "records.put", kind: "host", data: { name: "smoke", user: ssh[1], password: ssh[2], address: ssh[3], port: Number(ssh[4]), agent } }).id;
+    reload();
+    if (process.env.TERMIO_SMOKE_INSTALL) installAgent(id);
+    connect(id);
+    setInterval(() => { for (const prompt of [...ui.prompts]) answerHostKey(prompt.request, true); }, 200);
+  } else {
+    openLocal();
+  }
+}
 app.update();
 
 /**
@@ -46,6 +76,21 @@ app.update();
 function shortcut(event: KeyInput): boolean {
   if (event.phase !== "down" || ui.phase !== "ready") return false;
   const key = event.key.toLowerCase();
+  // The search bar is modal while it is open: Enter walks the matches, Escape closes it.
+  if (ui.termSearch) {
+    if (key === "enter") {
+      stepTermSearch(event.shiftKey);
+      app.update();
+      return true;
+    }
+    if (key === "escape") {
+      closeTermSearch();
+      app.update();
+      return true;
+    }
+    // Everything else typed here belongs to the search field, not to the pane behind it.
+    if (!event.ctrlKey && !event.metaKey) return true;
+  }
   const inTerminal = ui.active !== "home";
   const chord = event.ctrlKey && !event.altKey && (inTerminal ? event.shiftKey : true);
   if (event.ctrlKey && key === "tab") {
@@ -90,6 +135,12 @@ function shortcut(event: KeyInput): boolean {
       focusPane(tab.panes[(index + step + tab.panes.length) % tab.panes.length]!);
       break;
     }
+    case "f":
+      // Find in the focused terminal.
+      if (!event.shiftKey) return false;
+      openTermSearch();
+      app.focus("term-search");
+      break;
     case "l":
       lockVault();
       break;
@@ -113,9 +164,25 @@ function shortcut(event: KeyInput): boolean {
 app.onEvent(event => {
   if (event.type === "keyboard") {
     if (shortcut(event)) return;
+    // Escape in the Files path field puts the path bar back.
+    if (event.phase === "down" && event.key === "Escape" && event.id?.startsWith("files-path-")) {
+      const files = ui.tabs.find(tab => tab.files && `files-path-${tab.files.id}` === event.id)?.files;
+      if (files) cancelPath(files);
+      return;
+    }
+    // The soft keyboard's hidden field: its text arrives through the field (onChange), the
+    // keys that type nothing (Enter, Backspace, arrows) as key events.
+    const ime = sessionOfIme(event.id);
+    if (ime !== undefined) {
+      if (imeKey(ime, event)) app.update();
+      return;
+    }
     const session = focusedSession();
     // Keys go to the focused pane unless a text field, dialog or the palette has them.
-    const free = event.id === null || sessionOfNode(event.id) !== undefined;
+    // A terminal tab has no text field of its own, so there the keys always belong to the pane:
+    // the focus can still sit on what started the session (the quick-connect field, a host row),
+    // hidden behind the tab, and that swallowed every key of a fresh SSH session.
+    const free = event.id === null || typeof ui.active === "number" || sessionOfNode(event.id) !== undefined;
     if (session !== undefined && free && !ui.paletteOpen && ui.prompts.length === 0) core().key(session, event);
   } else if (event.type === "pointer") {
     const target = sessionOfNode(event.id);

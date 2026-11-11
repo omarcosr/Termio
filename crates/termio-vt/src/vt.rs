@@ -279,6 +279,44 @@ impl Vt {
         }
     }
 
+    /// One character per column of grid line `line` (negative is history), for search: the
+    /// spacer half of a wide character is `\0`, so indices are columns.
+    pub fn grid_chars(&self, line: i32) -> Vec<char> {
+        let grid = self.term.grid();
+        if line >= self.lines as i32 || line < -(grid.history_size() as i32) {
+            return Vec::new();
+        }
+        let row = &grid[Line(line)];
+        (0..self.columns)
+            .map(|column| {
+                let cell = &row[Column(column)];
+                if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) { '\0' } else { cell.c }
+            })
+            .collect()
+    }
+
+    /// Lines of scrollback above the screen.
+    pub fn history(&self) -> usize {
+        self.term.grid().history_size()
+    }
+
+    /// Repaints everything on the next frame (overlays such as search highlights changed).
+    pub fn mark_dirty(&mut self) {
+        self.stale = true;
+    }
+
+    /// Scrolls so grid line `line` is on screen, roughly a third from the top.
+    pub fn reveal(&mut self, line: i32) {
+        let visible = line + self.display_offset() as i32;
+        if visible >= 0 && (visible as usize) < self.lines {
+            return;
+        }
+        let target = (self.lines as i32 / 3 - line).clamp(0, self.history() as i32);
+        let delta = target - self.display_offset() as i32;
+        self.term.scroll_display(Scroll::Delta(delta));
+        self.stale = true;
+    }
+
     /// The text of visible line `line` without trailing blanks.
     pub fn row_text(&self, line: usize) -> String {
         let mut cells = Vec::new();

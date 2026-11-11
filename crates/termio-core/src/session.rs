@@ -44,6 +44,13 @@ pub trait Session: Send + Sync {
     fn pointer(&self, event: &PointerEvent);
     /// The text on screen now, one string per line, without trailing blanks.
     fn screen(&self) -> Vec<String>;
+    /// Highlights every match of `query` (case-insensitive) on screen and in scrollback; returns how many.
+    fn search(&self, _query: &str) -> usize {
+        0
+    }
+    /// Moves to the next (or previous) match.
+    fn search_step(&self, _backwards: bool) {}
+    fn search_clear(&self) {}
     fn close(&self);
 }
 
@@ -85,6 +92,13 @@ impl Registry {
         entry.session.close();
         let _ = entry.surface.tx.send(Message::Quit);
         true
+    }
+
+    /// Asks every session to lay out again (the terminal font changed).
+    pub fn relayout_all(&self) {
+        for entry in self.lock().values() {
+            let _ = entry.surface.tx.send(crate::surface::Message::Relayout);
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Entry>> {

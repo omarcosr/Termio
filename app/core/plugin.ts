@@ -2,9 +2,8 @@
 // and exposes a typed client. Terminal pixels never pass through here: the core presents them
 // straight into the <surface>; this side carries control requests, input and events.
 import { definePlugin } from "@tarve/core";
-import { JSCallback } from "bun:ffi";
 import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { dispatchCoreEvent, type CoreEvent } from "./events";
 
 const ABI_VERSION = 1;
@@ -91,10 +90,10 @@ function modifiers(input: Modifiers): number {
  * else (in a built executable) the copy `tarve build` embedded from package.json `tarve.native`.
  */
 function libraryPath(root: string): string | undefined {
-  if (process.env.TERMIO_CORE) return process.env.TERMIO_CORE;
-  const name = process.platform === "win32" ? "termio_core.dll" : "libtermio_core.so";
-  const built = ["release", "debug"].map(profile => join(root, "target", profile, name)).filter(path => existsSync(path));
-  return built.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+      if (process.env.TERMIO_CORE) return process.env.TERMIO_CORE;
+      const name = process.platform === "win32" ? "termio_core.dll" : "libtermio_core.so";
+      const built = ["release", "debug"].map(profile => join(root, "target", profile, name)).filter(path => existsSync(path));
+      return built.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
 }
 
 export const termioCore = definePlugin({
@@ -125,12 +124,16 @@ export const termioCore = definePlugin({
       }
     };
     // Called from a core thread; Bun runs it on this thread, where the queue is drained.
-    const wake = new JSCallback(drain, { args: [], returns: "void", threadsafe: true });
-    const started = native.termio_init(wake.ptr);
+    // Other runtimes (txiki.js) have no thread-safe callbacks: the queue is polled instead.
+    const bunFfi = typeof (globalThis as { Bun?: unknown }).Bun === "undefined" ? undefined : (require(["bun", "ffi"].join(":")) as typeof import("bun:ffi"));
+    const wake = bunFfi ? new bunFfi.JSCallback(drain, { args: [], returns: "void", threadsafe: true }) : undefined;
+    const poll = wake ? undefined : setInterval(drain, 16);
+    const started = native.termio_init(wake ? wake.ptr : null);
     if (started !== 0) throw new Error(`termio core failed to start (${started})`);
     ctx.onClosed(() => {
       client = undefined;
-      wake.close();
+      wake?.close();
+      if (poll) clearInterval(poll);
     });
 
     let response = new Uint8Array(64 * 1024);
@@ -150,7 +153,7 @@ export const termioCore = definePlugin({
         if (!result.ok) throw new Error(`${request.op}: ${result.error ?? "failed"}`);
         return result as T;
       },
-      attach: (session, handle, kind, width, height, scale) => check(native.termio_surface_attach(session, handle, kind, width, height, scale), "surface attach"),
+      attach: (session, handle, kind, width, height, scale) => check(native.termio_surface_attach(session, bunFfi ? handle : Number(handle), kind, width, height, scale), "surface attach"),
       resize: (session, width, height, scale) => check(native.termio_surface_resize(session, width, height, scale), "surface resize"),
       detach: session => { native.termio_surface_detach(session); },
       key(session, input) {

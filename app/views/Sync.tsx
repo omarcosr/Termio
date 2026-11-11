@@ -2,7 +2,7 @@ import { Column, Row, Scroll, Text } from "@tarve/core";
 import { configureSync, disableSync, syncNow, ui } from "../state/store";
 import { CloudflareConnect, cf } from "./Cloudflare";
 import { Glyph } from "../ui/icons";
-import { Action, Field, Hint, mono, relativeTime, Segments } from "../ui/kit";
+import { gutter, Action, Field, Hint, mono, relativeTime, Segments } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
 const form = { account: "", bucket: "", accessKey: "", secretKey: "", endpoint: "", seeded: false };
@@ -35,7 +35,7 @@ export function Sync() {
   const configured = ui.sync.configured;
   return (
     <Scroll flex={1}>
-      <Column gap={18} style={{ padding: { top: 22, left: 28, right: 28, bottom: 28 }, maxWidth: 720 }}>
+      <Column gap={18} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
         <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>Sync</Text>
         <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
           Keep this vault the same on every device through your own Cloudflare R2 bucket. Everything is encrypted here before upload with your vault key: R2 stores opaque blobs and never sees a host, password or key.
@@ -47,7 +47,7 @@ export function Sync() {
             <Text size={14} weight={650} color={color.text}>{configured ? "Bucket" : "Connect a bucket"}</Text>
           </Row>
           <Segments value={cf.mode} options={[{ value: "cloudflare", label: "Sign in with a token" }, { value: "manual", label: "Access keys" }] as const} onChange={mode => { cf.mode = mode; }} />
-          {cf.mode === "cloudflare" ? <CloudflareConnect onPick={configureSync} selected={ui.syncSettings?.bucket} /> : <Column gap={14}>
+          {cf.mode === "cloudflare" ? <CloudflareConnect onPick={configureSync} selected={ui.syncSettings?.bucket} askName /> : <Column gap={14}>
           <Field label="Cloudflare account ID" value={form.account} placeholder="32-character account ID" monospace onChange={value => { form.account = value; }} />
           <Field label="Bucket" value={form.bucket} placeholder="termio-vault" monospace onChange={value => { form.bucket = value; }} />
           <Row gap={10}>

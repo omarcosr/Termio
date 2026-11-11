@@ -117,7 +117,8 @@ pub extern "C" fn termio_init(wake: Option<events::WakeFn>) -> i32 {
             events::init(wake);
             0
         }
-        None => INVALID,
+        // No wake: the UI polls the queue (runtimes without thread-safe callbacks).
+        None => 0,
     })
 }
 

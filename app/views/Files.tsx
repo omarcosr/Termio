@@ -1,10 +1,10 @@
 import { Column, Pressable, Row, Scroll, Text } from "@tarve/core";
-import { browse, dialogs, download, joinPath, makeDirectory, removeEntry, renameEntry, ui, upload, type FilesInfo, type RemoteEntry, type Transfer } from "../state/store";
+import { browse, dialogs, refresh, download, joinPath, makeDirectory, removeEntry, renameEntry, ui, upload, type FilesInfo, type RemoteEntry, type Transfer } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { Action, IconAction, TextField, mono } from "../ui/kit";
+import { compact, Action, IconAction, TextField, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
-const drafts = new Map<number, { newFolder?: string; renaming?: { entry: string; name: string }; selected?: string }>();
+const drafts = new Map<number, { newFolder?: string; renaming?: { entry: string; name: string }; selected?: string; path?: string }>();
 
 function draft(files: FilesInfo) {
   let value = drafts.get(files.id);
@@ -40,25 +40,75 @@ async function pickUpload(files: FilesInfo) {
   for (const local of await dialogs.open()) upload(files, local);
 }
 
-function Crumbs({ files }: { files: FilesInfo }) {
-  const parts = files.path.split("/").filter(Boolean);
+/** Goes to a typed path: absolute, ~ for home, or relative to the folder shown. */
+function goTo(files: FilesInfo, typed: string): void {
+  draft(files).path = undefined;
+  const path = typed.trim();
+  if (!path) return;
+  const home = files.home ?? "/";
+  const absolute = path === "~" ? home : path.startsWith("~/") ? joinPath(home, path.slice(2)) : path.startsWith("/") ? path : joinPath(files.path, path);
+  // Back to the crumbs only once the folder opened; a wrong path keeps the field to fix it.
+  void browse(files, absolute).then(() => { if (files.path !== absolute) draft(files).path = path; });
+}
+
+/** Turns the path bar into a field holding the current path, focused once it is drawn. */
+function editPath(files: FilesInfo): void {
+  draft(files).path = files.path;
+  refresh();
+  setTimeout(() => dialogs.focus(pathFieldId(files)), 0);
+}
+
+export const editPathForTest = editPath;
+
+/** Leaves the field without going anywhere (Escape, or a tap on the list). */
+export function cancelPath(files: FilesInfo): void {
+  if (draft(files).path === undefined) return;
+  draft(files).path = undefined;
+  refresh();
+}
+
+/** The path bar: the folders as text; a tap turns it into a field, Enter goes there. */
+function PathBar({ files }: { files: FilesInfo }) {
+  const state = draft(files);
+  if (state.path !== undefined) {
+    return (
+      <Row flex={1} style={{ minWidth: 0 }}>
+        <TextField
+          id={pathFieldId(files)}
+          value={state.path}
+          placeholder="/path/to/folder"
+          onChange={value => { state.path = value; }}
+          onSubmit={value => goTo(files, value)}
+          style={{ flex: 1, minWidth: 0, height: 32, ...mono, fontSize: 12.5 }}
+        />
+      </Row>
+    );
+  }
   return (
-    <Row gap={2} align="center" flex={1} style={{ minWidth: 0 }}>
-      <Pressable focusable onClick={() => browse(files, "/")} style={{ padding: { left: 6, right: 6, top: 4, bottom: 4 }, radius: 5, hover: { background: color.hover } }}>
-        <Text size={12.5} color={color.muted} style={mono}>/</Text>
-      </Pressable>
-      {parts.map((part, index) => {
-        const path = `/${parts.slice(0, index + 1).join("/")}`;
-        const last = index === parts.length - 1;
-        return (
-          <Row key={path} gap={2} align="center">
-            {index > 0 ? <Text size={12.5} color={color.faint} style={mono}>/</Text> : null}
-            <Pressable focusable onClick={() => browse(files, path)} style={{ padding: { left: 6, right: 6, top: 4, bottom: 4 }, radius: 5, hover: { background: color.hover } }}>
-              <Text size={12.5} weight={last ? 600 : 400} color={last ? color.text : color.muted} style={mono}>{part}</Text>
-            </Pressable>
-          </Row>
-        );
-      })}
+    <Pressable
+      flex={1}
+      focusable
+      onClick={() => editPath(files)}
+      control={{ role: "button", label: `Path ${files.path}. Edit` }}
+      style={{ direction: "row", align: "center", minWidth: 0, height: 32, padding: { left: 10, right: 10 }, radius: radius.control, borderColor: "transparent", borderWidth: 1, hover: { background: color.hover, borderColor: color.line } }}
+    >
+      <Crumbs files={files} />
+    </Pressable>
+  );
+}
+
+const pathFieldId = (files: FilesInfo) => `files-path-${files.id}`;
+
+function Crumbs({ files }: { files: FilesInfo }) {
+  const all = files.path.split("/").filter(Boolean);
+  // A phone shows the last two folders; "…" stands for the rest.
+  const hidden = compact() ? Math.max(0, all.length - 2) : 0;
+  const parts = all.slice(hidden);
+  const lead = [hidden ? "…" : "", ...parts.slice(0, -1)].join(" / ");
+  return (
+    <Row gap={6} align="center" style={{ minWidth: 0, overflow: "hidden" }}>
+      <Text size={12.5} color={color.faint} style={{ ...mono, whiteSpace: "pre", shrink: 0 }}>{parts.length ? `${lead} /`.trimStart() : "/"}</Text>
+      {parts.length ? <Text size={12.5} weight={600} color={color.text} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis", shrink: 1, minWidth: 0 }}>{parts[parts.length - 1]!}</Text> : null}
     </Row>
   );
 }
@@ -72,7 +122,7 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
     <Pressable
       key={entry.name}
       focusable
-      onClick={() => { state.selected = entry.name; }}
+      onClick={() => { state.selected = entry.name; cancelPath(files); }}
       onKeyDown={key => { if (key === "Enter") open(); }}
       style={{ direction: "row", align: "center", gap: 12, height: 36, padding: { left: 14, right: 6 }, radius: radius.control, background: selected ? color.raised : "transparent", hover: { background: color.raised } }}
     >
@@ -91,9 +141,10 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
           <Text size={13} color={color.text} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{entry.name}</Text>
         </Pressable>
       )}
-      <Text size={12} color={color.faint} style={{ ...mono, width: 80, textAlign: "end" }}>{entry.directory ? "" : size(entry.size)}</Text>
-      <Text size={12} color={color.faint} style={{ width: 130, textAlign: "end" }}>{when(entry.modified)}</Text>
-      <Row gap={2} style={{ width: 96, justify: "end", opacity: selected ? 1 : 0.0 }}>
+      {compact() && selected ? null : <Text size={12} color={color.faint} style={{ ...mono, width: 80, shrink: 0, textAlign: "end" }}>{entry.directory ? "" : size(entry.size)}</Text>}
+      {compact() ? null : <Text size={12} color={color.faint} style={{ width: 130, textAlign: "end" }}>{when(entry.modified)}</Text>}
+      {/* A phone shows the actions of the selected row only, where the size column was. */}
+      <Row gap={2} style={compact() ? { display: selected ? "flex" : "none", shrink: 0 } : { width: 96, justify: "end", opacity: selected ? 1 : 0.0 }}>
         {entry.directory ? null : <IconAction icon="download" label={`Download ${entry.name}`} onClick={() => pickDownload(files, entry)} />}
         <IconAction icon="pencil" label={`Rename ${entry.name}`} onClick={() => { state.renaming = { entry: entry.name, name: entry.name }; }} />
         <IconAction icon="trash" label={`Delete ${entry.name}`} onClick={() => removeEntry(files, entry)} />
@@ -109,9 +160,9 @@ function TransferRow({ transfer }: { transfer: Transfer }) {
     <Column gap={6} style={{ padding: { top: 8, bottom: 8 } }}>
       <Row gap={8} align="center">
         <Glyph name={transfer.direction === "up" ? "upload" : "download"} size={13} color={tone} />
-        <Text size={12.5} color={color.text} style={{ flex: 1, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{transfer.name}</Text>
-        <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap" }}>{transfer.state === "error" ? "failed" : transfer.total ? `${size(transfer.done)} / ${size(transfer.total)}` : size(transfer.done)}</Text>
+        <Text size={12.5} color={color.text} style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{transfer.name}</Text>
       </Row>
+      <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap" }}>{transfer.state === "error" ? "failed" : transfer.total ? `${size(transfer.done)} / ${size(transfer.total)}` : size(transfer.done)}</Text>
       <Row style={{ height: 3, radius: 2, background: color.line }}>
         <Row style={{ width: `${Math.round(fraction * 100)}%`, height: 3, radius: 2, background: tone }} />
       </Row>
@@ -131,15 +182,17 @@ export function Files({ files }: { files: FilesInfo }) {
       </Column>
     );
   }
+  const narrow = compact();
   return (
-    <Row flex={1} align="stretch" style={{ minHeight: 0 }}>
+    <Column flex={1} style={{ minHeight: 0 }}>
+      <Row flex={1} align="stretch" style={{ minHeight: 0 }}>
       <Column flex={1} style={{ minWidth: 0 }}>
-        <Row gap={8} align="center" style={{ height: 52, padding: { left: 16, right: 16 }, borderColor: color.line, borderWidth: { bottom: 1 } }}>
+        <Row gap={narrow ? 4 : 8} align="center" style={{ height: 52, padding: { left: narrow ? 8 : 16, right: narrow ? 8 : 16 }, borderColor: color.line, borderWidth: { bottom: 1 } }}>
           <IconAction icon="up" label="Up one folder" onClick={() => browse(files, joinPath(files.path, ".."))} />
-          <Crumbs files={files} />
+          <PathBar files={files} />
           <IconAction icon="refresh" label="Refresh" onClick={() => browse(files, files.path)} />
-          <Action icon="folderPlus" label="New folder" onClick={() => { state.newFolder = ""; }} />
-          <Action tone="primary" icon="upload" label="Upload" onClick={() => pickUpload(files)} />
+          {narrow ? <IconAction icon="folderPlus" label="New folder" onClick={() => { state.newFolder = ""; }} /> : <Action icon="folderPlus" label="New folder" onClick={() => { state.newFolder = ""; }} />}
+          {narrow ? <IconAction icon="upload" label="Upload" color={color.accent} onClick={() => pickUpload(files)} /> : <Action tone="primary" icon="upload" label="Upload" onClick={() => pickUpload(files)} />}
         </Row>
         {state.newFolder !== undefined ? (
           <Row gap={8} align="center" style={{ padding: { left: 16, right: 16, top: 10, bottom: 10 }, borderColor: color.line, borderWidth: { bottom: 1 } }}>
@@ -154,10 +207,10 @@ export function Files({ files }: { files: FilesInfo }) {
             <IconAction icon="x" label="Cancel" onClick={() => { state.newFolder = undefined; }} />
           </Row>
         ) : null}
-        <Row gap={12} style={{ padding: { left: 30, right: 108, top: 10, bottom: 6 } }}>
+        <Row gap={12} style={{ padding: { left: 30, right: narrow ? 14 : 108, top: 10, bottom: 6 } }}>
           <Text size={11.5} weight={650} color={color.faint} style={{ flex: 1 }}>Name</Text>
           <Text size={11.5} weight={650} color={color.faint} style={{ width: 80, textAlign: "end" }}>Size</Text>
-          <Text size={11.5} weight={650} color={color.faint} style={{ width: 130, textAlign: "end" }}>Modified</Text>
+          {narrow ? null : <Text size={11.5} weight={650} color={color.faint} style={{ width: 130, textAlign: "end" }}>Modified</Text>}
         </Row>
         <Scroll flex={1}>
           <Column gap={1} style={{ padding: { left: 8, right: 8, bottom: 16 }, opacity: files.loading ? 0.6 : 1 }}>
@@ -166,14 +219,23 @@ export function Files({ files }: { files: FilesInfo }) {
           </Column>
         </Scroll>
       </Column>
-      {files.transfers.length ? (
-        <Column style={{ width: 280, padding: 16, background: color.panel, borderColor: color.line, borderWidth: { left: 1 } }}>
-          <Text size={13} weight={650} color={color.text}>Transfers</Text>
-          <Scroll flex={1}>
-            <Column>{files.transfers.map(transfer => <TransferRow key={transfer.request} transfer={transfer} />)}</Column>
-          </Scroll>
-        </Column>
-      ) : null}
+      {files.transfers.length > 0 && !narrow ? <Transfers files={files} narrow={false} /> : null}
     </Row>
+    {/* A phone has no room beside the list: the transfers sit under it. */}
+    {files.transfers.length > 0 && narrow ? <Transfers files={files} narrow /> : null}
+    </Column>
+  );
+}
+
+function Transfers({ files, narrow }: { files: FilesInfo; narrow: boolean }) {
+  return (
+    <Column style={narrow
+      ? { height: 180, shrink: 0, overflow: "hidden", padding: 12, background: color.panel, borderColor: color.line, borderWidth: { top: 1 } }
+      : { width: 280, shrink: 1, minWidth: 200, overflow: "hidden", padding: 16, background: color.panel, borderColor: color.line, borderWidth: { left: 1 } }}>
+      <Text size={13} weight={650} color={color.text}>Transfers</Text>
+      <Scroll flex={1}>
+        <Column>{files.transfers.map(transfer => <TransferRow key={transfer.request} transfer={transfer} />)}</Column>
+      </Scroll>
+    </Column>
   );
 }

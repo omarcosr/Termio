@@ -60,6 +60,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_protocol_knows_the_agent_palette() {
+        let theme = Theme::default();
+        assert_eq!(termio_proto::AGENT_FOREGROUND, rgb(theme.foreground));
+        assert_eq!(termio_proto::AGENT_BACKGROUND, rgb(theme.background));
+        assert_eq!(termio_proto::AGENT_ANSI.to_vec(), theme.ansi.iter().map(|&color| rgb(color)).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn rows_become_runs_without_trailing_blanks() {
         let mut vt = Vt::new(20, 3, Theme::default(), 0);
         vt.feed("hi \x1b[31mred\x1b[0m 日本  ".as_bytes());

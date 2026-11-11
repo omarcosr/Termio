@@ -2,6 +2,7 @@
 //! are signed too, so a proxy cannot strip them and turn a guarded write into a blind one.
 
 use crate::{Condition, Store, StoreError};
+use rusty_s3::actions::ListObjectsV2;
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -16,12 +17,20 @@ pub struct R2Config {
     /// Another S3 endpoint instead of R2's (MinIO, S3 itself).
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// The vault's name in the bucket: stored as `<name>.vault`.
+    #[serde(default = "default_name")]
+    pub name: String,
+}
+
+fn default_name() -> String {
+    "termio".into()
 }
 
 pub struct R2Store {
     bucket: Bucket,
     credentials: Credentials,
     agent: ureq::Agent,
+    key: String,
 }
 
 const SIGNATURE_LIFETIME: Duration = Duration::from_secs(300);
@@ -40,7 +49,7 @@ impl R2Store {
             .timeout_global(Some(Duration::from_secs(60)))
             .build()
             .into();
-        Ok(Self { bucket, credentials: Credentials::new(config.access_key.trim(), config.secret_key.trim()), agent })
+        Ok(Self { bucket, credentials: Credentials::new(config.access_key.trim(), config.secret_key.trim()), agent, key: crate::vault_key(&config.name) })
     }
 }
 
@@ -57,6 +66,23 @@ fn failure(action: &str, key: &str, response: &mut ureq::http::Response<ureq::Bo
 }
 
 impl Store for R2Store {
+    fn vault_key(&self) -> String {
+        self.key.clone()
+    }
+
+    fn list_vaults(&self) -> Result<Vec<String>, StoreError> {
+        let mut action = ListObjectsV2::new(&self.bucket, Some(&self.credentials));
+        action.with_delimiter("/");
+        let url = action.sign(SIGNATURE_LIFETIME);
+        let mut response = self.agent.get(url.as_str()).call().map_err(|error| StoreError::Other(error.to_string()))?;
+        if response.status().as_u16() != 200 {
+            return Err(failure("list", "", &mut response));
+        }
+        let body = response.body_mut().read_to_string().map_err(|error| StoreError::Other(error.to_string()))?;
+        let list = ListObjectsV2::parse_response(&body).map_err(|error| StoreError::Other(error.to_string()))?;
+        Ok(list.contents.into_iter().map(|object| object.key).filter(|key| key.ends_with(".vault")).collect())
+    }
+
     fn get(&self, key: &str) -> Result<Option<(Vec<u8>, String)>, StoreError> {
         let url = self.bucket.get_object(Some(&self.credentials), key).sign(SIGNATURE_LIFETIME);
         let mut response = self.agent.get(url.as_str()).call().map_err(|error| StoreError::Other(error.to_string()))?;
@@ -110,7 +136,7 @@ mod tests {
             eprintln!("skipped: no TERMIO_R2_* credentials");
             return;
         };
-        let store = R2Store::new(&R2Config { account, bucket, access_key, secret_key, endpoint: None }).unwrap();
+        let store = R2Store::new(&R2Config { account, bucket, access_key, secret_key, endpoint: None, name: "termio".into() }).unwrap();
         let mut tag = [0u8; 8];
         getrandom::fill(&mut tag).unwrap();
         let key = format!("termio-test/{}", hex::encode(tag));

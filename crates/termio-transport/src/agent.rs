@@ -9,7 +9,9 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use termio_agent::Rendezvous;
-use termio_agent::client::{Command, Events, run, terminate_session};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use termio_agent::client::{Command, Events, reachable, run, terminate_session};
 use tokio::sync::mpsc;
 
 /// Starts the agent wherever it is installed and prints its rendezvous line.
@@ -51,6 +53,50 @@ pub struct AgentShell {
     link: Arc<Mutex<Link>>,
 }
 
+/// A spare agent per server, started in the background after a session comes up: the next tab
+/// to that server attaches to it over QUIC alone and skips the SSH login and agent start, the
+/// slowest part of opening a session on a distant link. An unused spare ends by itself after the
+/// agent's resume window.
+type Spares = HashMap<String, (SocketAddr, Rendezvous, Instant)>;
+static SPARES: Mutex<Option<Spares>> = Mutex::new(None);
+/// Spares older than this are not trusted to still be waiting (the agent gives up at 15 min).
+const SPARE_AGE: Duration = Duration::from_secs(10 * 60);
+
+fn spare_key(target: &Target) -> String {
+    format!("{}@{}:{}", target.user, target.host, target.port)
+}
+
+fn take_spare(target: &Target) -> Option<(SocketAddr, Rendezvous)> {
+    let mut spares = SPARES.lock().unwrap_or_else(|p| p.into_inner());
+    let (address, rendezvous, at) = spares.get_or_insert_with(HashMap::new).remove(&spare_key(target))?;
+    (at.elapsed() < SPARE_AGE).then_some((address, rendezvous))
+}
+
+async fn start_agent(target: &Target, verifier: Arc<dyn Verifier>) -> Result<(SocketAddr, Rendezvous), String> {
+    let output = exec_until(target, verifier, START, Rendezvous::PREFIX).await?;
+    if output.contains("TERMIO-AGENT-MISSING") {
+        return Err("termio-agent is not installed on this server; using plain SSH".into());
+    }
+    let rendezvous = Rendezvous::parse(&output).ok_or_else(|| "the agent did not start; using plain SSH".to_owned())?;
+    let address = resolve(&target.host, rendezvous.port).ok_or_else(|| format!("cannot resolve {}", target.host))?;
+    Ok((address, rendezvous))
+}
+
+/// Starts the next tab's spare unless one is already waiting.
+fn refill_spare(target: Target, verifier: Arc<dyn Verifier>) {
+    if SPARES.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashMap::new).contains_key(&spare_key(&target)) {
+        return;
+    }
+    runtime().spawn(async move {
+        if let Ok((address, rendezvous)) = start_agent(&target, verifier).await {
+            let replaced = SPARES.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashMap::new).insert(spare_key(&target), (address, rendezvous, Instant::now()));
+            if let Some((address, rendezvous, _)) = replaced {
+                terminate_session(address, &rendezvous).await;
+            }
+        }
+    });
+}
+
 fn resolve(host: &str, port: u16) -> Option<SocketAddr> {
     (host, port).to_socket_addrs().ok()?.next()
 }
@@ -64,15 +110,14 @@ impl AgentShell {
             let started = if target.jump.is_some() {
                 Err("the agent needs a direct route to the server; using SSH through the jump host".to_owned())
             } else {
-                exec_until(&target, verifier.clone(), START, Rendezvous::PREFIX).await.and_then(|output| {
-                    if output.contains("TERMIO-AGENT-MISSING") {
-                        return Err("termio-agent is not installed on this server; using plain SSH".into());
-                    }
-                    let rendezvous = Rendezvous::parse(&output).ok_or_else(|| "the agent did not start; using plain SSH".to_owned())?;
-                    let address = resolve(&target.host, rendezvous.port).ok_or_else(|| format!("cannot resolve {}", target.host))?;
-                    Ok((address, rendezvous))
-                })
+                match take_spare(&target) {
+                    Some((address, rendezvous)) if reachable(address, &rendezvous, Duration::from_millis(1500)).await => Ok((address, rendezvous)),
+                    _ => start_agent(&target, verifier.clone()).await,
+                }
             };
+            if started.is_ok() && std::env::var_os("TERMIO_NO_SPARE").is_none() {
+                refill_spare(target.clone(), verifier.clone());
+            }
             // Decide under the lock, act after it: a guard must not live across an await.
             let next = {
                 let mut link = shared.lock().unwrap_or_else(|p| p.into_inner());

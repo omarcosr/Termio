@@ -21,6 +21,8 @@ pub enum Message {
     Attach { presenter: Box<dyn Presenter>, width: u32, height: u32, scale: f32 },
     Resize { width: u32, height: u32, scale: f32 },
     Detach,
+    /// Lay out again at the current size: the font or its size changed.
+    Relayout,
     Dirty,
     Quit,
 }
@@ -79,6 +81,7 @@ fn run(session: u32, scene: Arc<dyn Scene>, rx: Receiver<Message>, pending: Arc<
     let mut full = true;
     // The UI hears once per attach that pixels are on screen.
     let mut announce = false;
+    let mut size = (0u32, 0u32, 1.0f32);
     let report = |error: &PresentError| {
         events::emit(json!({ "type": "surface.error", "session": session, "message": error.to_string() }));
     };
@@ -87,6 +90,7 @@ fn run(session: u32, scene: Arc<dyn Scene>, rx: Receiver<Message>, pending: Arc<
         for message in std::iter::once(first).chain(rx.try_iter()) {
             match message {
                 Message::Attach { presenter: attached, width, height, scale } => {
+                    size = (width, height, scale);
                     canvas.resize(width, height);
                     scene.layout(width, height, scale, &mut fonts().lock().unwrap_or_else(|p| p.into_inner()));
                     presenter = Some(attached);
@@ -94,6 +98,7 @@ fn run(session: u32, scene: Arc<dyn Scene>, rx: Receiver<Message>, pending: Arc<
                     announce = true;
                 }
                 Message::Resize { width, height, scale } => {
+                    size = (width, height, scale);
                     canvas.resize(width, height);
                     scene.layout(width, height, scale, &mut fonts().lock().unwrap_or_else(|p| p.into_inner()));
                     if let Some(active) = presenter.as_mut() && let Err(error) = active.resize(width, height) {
@@ -103,6 +108,12 @@ fn run(session: u32, scene: Arc<dyn Scene>, rx: Receiver<Message>, pending: Arc<
                     full = true;
                 }
                 Message::Detach => presenter = None,
+                Message::Relayout => {
+                    if size.0 > 0 {
+                        scene.layout(size.0, size.1, size.2, &mut fonts().lock().unwrap_or_else(|p| p.into_inner()));
+                    }
+                    full = true;
+                }
                 Message::Dirty => {}
                 Message::Quit => quit = true,
             }
@@ -125,6 +136,10 @@ fn run(session: u32, scene: Arc<dyn Scene>, rx: Receiver<Message>, pending: Arc<
             Ok(()) => {
                 full = false;
                 frames.fetch_add(1, Ordering::Relaxed);
+                if let Some(path) = std::env::var_os("TERMIO_CANVAS_DUMP") && frames.load(Ordering::Relaxed) >= 40 {
+                    // Diagnostics: the exact pixels handed to the presenter, as a BGRA dump.
+                    let _ = std::fs::write(&path, [&canvas.width().to_le_bytes()[..], &canvas.height().to_le_bytes()[..], canvas.pixels()].concat());
+                }
                 if std::mem::take(&mut announce) {
                     events::emit(json!({ "type": "surface.ready", "session": session }));
                 }

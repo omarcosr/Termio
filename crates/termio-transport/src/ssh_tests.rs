@@ -299,3 +299,24 @@ fn without_the_agent_the_session_falls_back_to_plain_ssh() {
     assert!(sink.notices.lock().unwrap().iter().any(|(kind, detail)| kind == "agent" && detail.contains("not installed")));
     wait_for("the input typed while starting", || String::from_utf8_lossy(&sink.output.lock().unwrap()).contains("echo:typed early"));
 }
+
+/// Signs in with the running ssh-agent against a real server, only when one is configured:
+/// `TERMIO_AGENT_TARGET=user@host:port` with `SSH_AUTH_SOCK` (or OpenSSH's pipe on Windows).
+#[test]
+fn the_ssh_agent_signs_in_against_a_real_server() {
+    let Ok(destination) = std::env::var("TERMIO_AGENT_TARGET") else {
+        eprintln!("skipped: no TERMIO_AGENT_TARGET");
+        return;
+    };
+    let (user, rest) = destination.split_once('@').expect("user@host:port");
+    let (host, port) = rest.rsplit_once(':').expect("host:port");
+    let target = Target { host: host.into(), port: port.parse().unwrap(), user: user.into(), auth: vec![Auth::Agent], jump: None, forwards: Vec::new() };
+    struct Trust;
+    impl Verifier for Trust {
+        fn verify(&self, _key: HostKey, answer: oneshot::Sender<bool>) {
+            let _ = answer.send(true);
+        }
+    }
+    let output = runtime().block_on(exec_until(&target, Arc::new(Trust), "echo AGENT-$((20+3))", "AGENT-23")).expect("signed in with the agent");
+    assert!(output.contains("AGENT-23"));
+}

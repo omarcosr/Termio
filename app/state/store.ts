@@ -3,6 +3,8 @@
 // the core hands back records with `has…` flags in their place.
 import { onCoreEvent, type CoreEvent } from "../core/events";
 import { core } from "../core/plugin";
+import { setPalette } from "../ui/tokens";
+import { openExternal } from "@tarve/core";
 
 export interface VaultRecord<T = Record<string, unknown>> {
   id: string;
@@ -27,6 +29,8 @@ export interface HostData {
   lastConnected?: number;
   password?: string;
   hasPassword?: boolean;
+    /** Sign in with the keys the running ssh-agent holds, like ssh itself does. */
+      useAgent?: boolean;
 }
 
 export interface KeyData {
@@ -86,6 +90,8 @@ export interface Transfer {
 
 /** A file browser on one host, over its own SFTP connection. */
 export interface FilesInfo {
+  /** The remote home folder, for a typed ~. */
+  home?: string;
   id: number;
   host: string;
   state: "connecting" | "ready" | "error";
@@ -123,7 +129,7 @@ export interface HostKeyPrompt {
   previous: string | null;
 }
 
-export type View = "hosts" | "snippets" | "keys" | "known" | "sync";
+export type View = "hosts" | "snippets" | "keys" | "known" | "sync" | "settings" | "forwards";
 export type Phase = "locked" | "create" | "join" | "ready";
 
 export interface SyncSettings {
@@ -155,7 +161,17 @@ export const ui = {
   prompts: [] as HostKeyPrompt[],
   sync: { configured: false, state: "idle" as "idle" | "running" | "done" | "error", message: undefined as string | undefined, at: 0 },
   syncSettings: undefined as SyncSettings | undefined,
+  settingsOpen: false,
+  agentInstall: {} as Record<string, AgentInstall>,
+  appearance: { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" } as Appearance,
   paletteOpen: false,
+  /** An error nothing else handled, shown in a dialog instead of closing the app. */
+  fault: undefined as { message: string; detail: string } | undefined,
+  /** The pane or tab being dragged, and the drop zone under the pointer ("<session>:<zone>", "tab:<id>", "new"). */
+  drag: undefined as DragSource | undefined,
+  dropZone: undefined as string | undefined,
+  /** The terminal search bar, over the pane of `session`. */
+  termSearch: undefined as { session: number; query: string; count: number } | undefined,
   paletteQuery: "",
   toast: undefined as { text: string; tone: "ok" | "error" } | undefined,
 };
@@ -164,6 +180,10 @@ export const ui = {
 export const dialogs = {
   open: async (): Promise<string[]> => [],
   save: async (_name: string): Promise<string | undefined> => undefined,
+  /** One file to read, e.g. another program's export. */
+  pick: async (_title: string, _filters: { name: string; extensions: string[] }[]): Promise<string | undefined> => undefined,
+  /** Moves the keyboard focus to a node by id (on Android a text field brings up the soft keyboard). */
+  focus: (_id: string): void => {},
 };
 
 let render: () => void = () => {};
@@ -179,6 +199,37 @@ export function toast(text: string, tone: "ok" | "error" = "ok"): void {
   ui.toast = { text, tone };
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { ui.toast = undefined; render(); }, 3200);
+  render();
+}
+
+const sources: Record<string, string> = {
+  render: "while drawing the window",
+  "event-handler": "while handling a click or key",
+  listener: "in an event listener",
+  hotkey: "in a shortcut",
+  "file-dialog": "in the file dialog",
+  request: "in a request",
+  native: "in the window",
+  plugin: "in the Termio core",
+  rejection: "in a background task",
+  exception: "in a background task",
+};
+
+/**
+ * Shows an error nothing else caught in a dialog: the app keeps running and the person can read,
+ * copy or dismiss it. Repeats of the open error are ignored so a failing render cannot loop.
+ */
+export function reportFault(error: unknown, where?: string): void {
+  const text = message(error) || "Unknown error";
+  const stack = error instanceof Error && error.stack ? error.stack : text;
+  console.error(`[termio] ${where ?? "error"}`, error);
+  if (ui.fault?.message === text) return;
+  ui.fault = { message: text, detail: `${where ? `Where: ${sources[where] ?? where}\n` : ""}${stack}` };
+  try { render(); } catch { /* the dialog shows on the next frame */ }
+}
+
+export function dismissFault(): void {
+  ui.fault = undefined;
   render();
 }
 
@@ -209,6 +260,7 @@ export function loadStatus(): void {
   ui.sync.configured = status.syncConfigured;
   if (status.unlocked) {
     ui.phase = "ready";
+    loadAppearance();
     reload();
   } else {
     ui.phase = status.exists ? "locked" : "create";
@@ -241,13 +293,14 @@ export function createSyncedVault(password: string, confirm: string, r2: SyncFor
   if (ui.phase === "ready") configureSync(r2);
 }
 
-/** Whether a bucket already holds a vault; undefined when the check failed (reason in ui.error). */
-export function probeBucket(r2: SyncForm): boolean | undefined {
-  return attempt(() => core().call<{ hasVault: boolean }>({ op: "sync.probe", ...r2 }))?.hasVault;
+/** The vault names in a bucket; undefined when the listing failed (reason in ui.error). */
+export function listVaults(r2: SyncForm): string[] | undefined {
+  return attempt(() => core().call<{ vaults: string[] }>({ op: "sync.vaults", ...r2 }))?.vaults;
 }
 
 function enterVault(): void {
   ui.phase = "ready";
+  loadAppearance();
   const status = core().call<{ syncConfigured: boolean }>({ op: "vault.status" });
   ui.sync.configured = status.syncConfigured;
   reload();
@@ -311,6 +364,64 @@ export function removeHost(id: string): void {
   }
 }
 
+/** A server `~/.ssh/config` names, as the core parsed it. */
+export interface SshConfigHost {
+  name: string;
+  address: string;
+  user?: string;
+  port?: number;
+  identityFile?: string;
+  jump?: string;
+}
+
+/** Where hosts can be imported from. */
+export type ImportSource = "sshConfig" | "filezilla" | "termius";
+
+/** A host another program saved, as a scan reports it: its password stays in the core. */
+export interface ImportHost extends SshConfigHost {
+  key: string;
+  group?: string;
+  hasPassword: boolean;
+  /** The program keeps a private key for this host in its own store (Termius). */
+  hasKey?: boolean;
+  /** The vault already has a host at this address. */
+  exists: boolean;
+}
+
+export interface ImportScan {
+  source: string;
+  path: string;
+  hosts: ImportHost[];
+  /** Entries left out because they are not SSH (FTP sites, Telnet rows). */
+  skipped: number;
+}
+
+/** The hosts in `~/.ssh/config`; undefined when it could not be read (reason in ui.error). */
+export function scanSshConfig(): SshConfigHost[] | undefined {
+  return attempt(() => core().call<{ hosts: SshConfigHost[] }>({ op: "import.sshConfig" }))?.hosts;
+}
+
+/** Reads another program's hosts: `~/.ssh/config`, FileZilla's Site Manager or Termius' own data. */
+export function scanImport(source: ImportSource): ImportScan | undefined {
+  return attempt(() => core().call<ImportScan>({ op: "import.scan", source }));
+}
+
+/** Saves the chosen hosts, with their keys when asked, under the "Imported" group. */
+export function importSshHosts(hosts: SshConfigHost[], importKeys: boolean): void {
+  const imported = attempt(() => core().call<{ imported: number }>({ op: "import.apply", hosts, importKeys }));
+  if (!imported) return;
+  reload();
+  toast(imported.imported === 1 ? "Imported 1 host from ~/.ssh/config" : `Imported ${imported.imported} hosts from ~/.ssh/config`);
+}
+
+/** Saves hosts of the last scan by key, with their passwords, in their own groups (or "Imported"). */
+export function importScanned(keys: string[], importKeys: boolean, from: string): void {
+  const imported = attempt(() => core().call<{ imported: number }>({ op: "import.apply", keys, importKeys }));
+  if (!imported) return;
+  reload();
+  toast(imported.imported === 1 ? `Imported 1 host from ${from}` : `Imported ${imported.imported} hosts from ${from}`);
+}
+
 /** `user@host:port`, `host:port` or `host`. */
 export function parseQuickConnect(text: string): Partial<HostData> | undefined {
   const match = /^\s*(?:([^@\s]+)@)?(\[[^\]]+\]|[^:\s]+)(?::(\d{1,5}))?\s*$/.exec(text);
@@ -322,8 +433,18 @@ export function parseQuickConnect(text: string): Partial<HostData> | undefined {
 
 let nextTab = 1;
 
+/**
+ * The shell a local tab runs. The setting syncs with the vault, so a Windows choice
+ * (pwsh.exe) reaches Android and Linux too: there it falls back to the system default.
+ */
+function localShell(): string | undefined {
+  const shell = ui.appearance.shell;
+  if (!shell) return undefined;
+  return process.platform === "win32" || !/\.exe$/i.test(shell) ? shell : undefined;
+}
+
 function newSession(host: VaultRecord<HostData> | undefined): number | undefined {
-  const opened = attempt(() => host ? core().call<{ id: number }>({ op: "ssh.open", host: host.id }) : core().call<{ id: number }>({ op: "session.open", kind: "local" }));
+  const opened = attempt(() => host ? core().call<{ id: number }>({ op: "ssh.open", host: host.id }) : core().call<{ id: number }>({ op: "session.open", kind: "local", ...(localShell() ? { program: localShell() } : {}) }));
   if (!opened) {
     toast(ui.error ?? "Could not open the session", "error");
     return undefined;
@@ -412,6 +533,131 @@ export function closeTab(id: number): void {
   for (const session of tab!.panes) endSession(session);
   if (tab!.files) try { core().call({ op: "sftp.close", id: tab!.files.id }); } catch { /* gone */ }
   if (ui.active === id) ui.active = ui.tabs[Math.min(index, ui.tabs.length - 1)]?.id ?? "home";
+  render();
+}
+
+// --- Dragging panes and tabs ---------------------------------------------------------------
+
+export type DragSource = { kind: "pane"; session: number } | { kind: "tab"; id: number };
+export type DropZone = "left" | "right" | "top" | "bottom" | "center";
+const MAX_PANES = 4;
+
+export function startDrag(source: DragSource): void {
+  ui.drag = source;
+  ui.dropZone = undefined;
+  render();
+}
+
+export function endDrag(): void {
+  if (!ui.drag && !ui.dropZone) return;
+  ui.drag = undefined;
+  ui.dropZone = undefined;
+  render();
+}
+
+export function hoverDrop(zone: string | undefined): void {
+  if (ui.dropZone === zone) return;
+  ui.dropZone = zone;
+  render();
+}
+
+/** The sessions a drag carries: one pane, or every pane of a terminal tab. */
+function carried(source: DragSource): number[] | undefined {
+  if (source.kind === "pane") return ui.tabs.some(tab => tab.panes.includes(source.session)) ? [source.session] : undefined;
+  const tab = ui.tabs.find(item => item.id === source.id);
+  return tab?.kind === "terminal" ? [...tab.panes] : undefined;
+}
+
+/** Takes sessions out of their tabs without ending them; a tab left without panes goes. */
+function lift(sessions: number[]): void {
+  for (const tab of [...ui.tabs]) {
+    if (tab.kind !== "terminal") continue;
+    const kept = tab.panes.filter(session => !sessions.includes(session));
+    if (kept.length === tab.panes.length) continue;
+    tab.panes = kept;
+    if (kept.length === 0) ui.tabs.splice(ui.tabs.indexOf(tab), 1);
+    else if (!kept.includes(tab.focus)) tab.focus = kept[0]!;
+  }
+}
+
+function takeDrag(): DragSource | undefined {
+  const source = ui.drag;
+  ui.drag = undefined;
+  ui.dropZone = undefined;
+  return source;
+}
+
+/**
+ * Drops the dragged pane or tab on a pane: an edge puts it beside that pane (splitting the tab
+ * that way when the pane is alone), the centre swaps two panes or adds a whole tab after it.
+ */
+export function dropOnPane(target: number, zone: DropZone): void {
+  const source = takeDrag();
+  const moving = source && carried(source);
+  const tab = ui.tabs.find(item => item.panes.includes(target));
+  if (!source || !moving || !tab || moving.includes(target)) return render();
+  if (zone === "center" && source.kind === "pane") {
+    const from = ui.tabs.find(item => item.panes.includes(source.session))!;
+    from.panes[from.panes.indexOf(source.session)] = target;
+    tab.panes[tab.panes.indexOf(target)] = source.session;
+    if (from !== tab && from.focus === source.session) from.focus = target;
+    tab.focus = source.session;
+    ui.active = tab.id;
+    return render();
+  }
+  const staying = tab.panes.filter(session => !moving.includes(session));
+  if (staying.length + moving.length > MAX_PANES) {
+    toast(`A tab holds at most ${MAX_PANES} panes`, "error");
+    return;
+  }
+  lift(moving);
+  if (tab.panes.length === 1 && zone !== "center") tab.direction = zone === "left" || zone === "right" ? "row" : "column";
+  const at = tab.panes.indexOf(target);
+  tab.panes.splice(zone === "left" || zone === "top" ? at : at + 1, 0, ...moving);
+  tab.focus = moving[0]!;
+  ui.active = tab.id;
+  render();
+}
+
+/** Drops on a tab button: a tab moves to that place in the bar, a pane joins that tab. */
+export function dropOnTab(id: number): void {
+  const source = takeDrag();
+  const target = ui.tabs.find(tab => tab.id === id);
+  if (!source || !target) return render();
+  if (source.kind === "tab") {
+    const from = ui.tabs.findIndex(tab => tab.id === source.id);
+    if (from < 0 || source.id === id) return render();
+    const [moved] = ui.tabs.splice(from, 1);
+    ui.tabs.splice(ui.tabs.indexOf(target), 0, moved!);
+    return render();
+  }
+  if (target.kind !== "terminal" || target.panes.includes(source.session)) return render();
+  if (target.panes.length >= MAX_PANES) {
+    toast(`A tab holds at most ${MAX_PANES} panes`, "error");
+    return;
+  }
+  lift([source.session]);
+  target.panes.push(source.session);
+  target.focus = source.session;
+  ui.active = target.id;
+  render();
+}
+
+/** Drops on the free end of the tab bar: a pane becomes a tab of its own, a tab goes last. */
+export function dropOnNewTab(): void {
+  const source = takeDrag();
+  if (!source) return render();
+  if (source.kind === "tab") {
+    const from = ui.tabs.findIndex(tab => tab.id === source.id);
+    if (from >= 0) ui.tabs.push(...ui.tabs.splice(from, 1));
+    return render();
+  }
+  const owner = ui.tabs.find(tab => tab.panes.includes(source.session));
+  if (!owner || owner.panes.length === 1) return render();
+  lift([source.session]);
+  const tab: Tab = { id: nextTab++, kind: "terminal", panes: [source.session], direction: "row", focus: source.session };
+  ui.tabs.splice(ui.tabs.indexOf(owner) + 1, 0, tab);
+  ui.active = tab.id;
   render();
 }
 
@@ -637,6 +883,8 @@ export interface SyncForm {
   accessKey: string;
   secretKey: string;
   endpoint?: string;
+  /** The vault's name in the bucket (`<name>.vault`). */
+  name?: string;
 }
 
 export function configureSync(form: SyncForm): void {
@@ -712,10 +960,22 @@ export function listen(): void {
         } else return;
         break;
       }
+      case "session.openUrl":
+        openExternal(String(event.url));
+        return;
       case "hostkey":
         ui.prompts.push(event as unknown as HostKeyPrompt);
         break;
-      case "sync":
+      case "agent.install": {
+      const host = String(event.host);
+      const state = String(event.state) as AgentInstall["state"];
+      ui.agentInstall = { ...ui.agentInstall, [host]: { state, message: String(event.message ?? ""), at: Date.now() } };
+      const name = ui.hosts.find(record => record.id === host)?.data.name ?? "the server";
+      if (state === "done") toast(`Agent ready on ${name}: new sessions there are resumable`);
+      else if (state === "error") toast(`Agent install on ${name} failed`, "error");
+      break;
+    }
+    case "sync":
         ui.sync.state = event.state as typeof ui.sync.state;
         ui.sync.message = typeof event.message === "string" ? event.message : undefined;
         if (event.state !== "running") ui.sync.at = Date.now();
@@ -727,7 +987,8 @@ export function listen(): void {
         const files = filesById(Number(event.id));
         if (!files) return;
         files.state = "ready";
-        void browse(files, String(event.home ?? "/"));
+        files.home = String(event.home ?? "/");
+        void browse(files, files.home);
         break;
       }
       case "sftp.error": {
@@ -759,4 +1020,90 @@ export function listen(): void {
     }
     render();
   });
+}
+
+// --- Appearance ------------------------------------------------------------------------------
+
+export interface Appearance {
+  fontFamily: string;
+  fontSize: number;
+  theme: string;
+  cursor: "block" | "beam" | "underline";
+  padding: number;
+  /** The program a new local tab runs; empty for the system default. */
+  shell: string;
+}
+
+const DEFAULT_APPEARANCE: Appearance = { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" };
+
+function applyAppearance(): void {
+  setPalette(ui.appearance.theme);
+  attempt(() => core().call({ op: "terminal.appearance", ...ui.appearance }));
+}
+
+/** Reads the appearance saved in the vault and applies it to the terminals. */
+export function loadAppearance(): void {
+  const saved = attempt(() => core().call<{ records: VaultRecord<Partial<Appearance>>[] }>({ op: "records.list", kind: "settings" }))?.records.find(record => record.id === "appearance");
+  ui.appearance = { ...DEFAULT_APPEARANCE, ...saved?.data };
+  applyAppearance();
+}
+
+export function saveAppearance(change: Partial<Appearance>): void {
+  ui.appearance = { ...ui.appearance, ...change };
+  applyAppearance();
+  attempt(() => core().call({ op: "records.put", kind: "settings", id: "appearance", data: ui.appearance }));
+  render();
+}
+
+/** Uploads the termio-agent binary to a host so its sessions resume over QUIC. */
+export interface AgentInstall {
+  state: "checking" | "uploading" | "done" | "error";
+  message: string;
+  at: number;
+}
+
+export function installAgent(hostId: string): void {
+  ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "checking", message: "Connecting…", at: Date.now() } };
+  if (attempt(() => core().call({ op: "agent.install", host: hostId })) === undefined) {
+    ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "error", message: ui.error ?? "could not start", at: Date.now() } };
+  }
+  render();
+}
+let termSearchTimer: ReturnType<typeof setTimeout> | undefined;
+/** Opens the search bar over the focused pane. */
+export function openTermSearch(): void {
+  const session = focusedSession();
+  if (session === undefined) return;
+  ui.termSearch = { session, query: "", count: 0 };
+  render();
+}
+/** Types in the search bar; the core is asked once the typing pauses. */
+export function setTermQuery(query: string): void {
+  const search = ui.termSearch;
+  if (!search) return;
+  search.query = query;
+  clearTimeout(termSearchTimer);
+  termSearchTimer = setTimeout(() => {
+    const current = ui.termSearch;
+    if (!current) return;
+    const result = attempt(() => core().call<{ count: number }>({ op: "session.search", id: current.session, query: current.query }));
+    current.count = result?.count ?? 0;
+    render();
+  }, 120);
+  render();
+}
+/** The next match, or the previous one when `backwards`. */
+export function stepTermSearch(backwards = false): void {
+  const search = ui.termSearch;
+  if (!search) return;
+  attempt(() => core().call({ op: "session.searchNext", id: search.session, backwards }));
+  render();
+}
+/** Closes the bar and drops the highlight from the grid. */
+export function closeTermSearch(): void {
+  clearTimeout(termSearchTimer);
+  const search = ui.termSearch;
+  ui.termSearch = undefined;
+  if (search) attempt(() => core().call({ op: "session.searchClear", id: search.session }));
+  render();
 }
