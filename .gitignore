@@ -4,3 +4,5 @@ dist/
 .empryo/
 *.log
 /.bun-cache
+# Update signing key (tarve keygen): keep it secret and backed up, never commit it.
+*.key

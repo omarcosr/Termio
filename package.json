@@ -27,7 +27,12 @@
     "agent:linux": "wsl -d Ubuntu -- bash -lc \"cargo build --release -p termio-agent --target x86_64-unknown-linux-musl && mkdir -p dist/agent && strip -o dist/agent/termio-agent-linux-x64 target/x86_64-unknown-linux-musl/release/termio-agent\"",
     "icon": "powershell -ExecutionPolicy Bypass -File scripts/make-icon.ps1",
     "build": "cargo build --release -p termio-core && tarve build app/main.tsx --runtime txiki --outfile dist/Termio.exe",
-    "package": "tarve package dist/Termio.exe --format zip --version 0.1.0 --out dist/packages"
+    "package": "tarve package dist/Termio.exe --format zip --version 0.1.0 --out dist/packages",
+    "release": "bun scripts/release.ts"
+  },
+  "updates": {
+    "repo": "omarcosr/Termio",
+    "publicKey": "QIRO33rI9MQnETST+fFfutRuU1gmdBk2rgTy68TWCXw="
   },
   "dependencies": {
     "@tarve/core": "file:../tarve/dist/tarve-core-0.11.1.tgz"

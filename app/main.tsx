@@ -28,6 +28,7 @@ import { handleBack, Root } from "./views/Shell";
 import { cancelPath } from "./views/Files";
 import { forwardPointer, imeKey, sessionOfIme, sessionOfNode, touchPointer } from "./views/TerminalPane";
 import { touch } from "./ui/kit";
+import { startUpdateChecks } from "./state/updates";
 
 /**
  * Android's Back arrives as a close request. It goes back a step in the app first; on the first
@@ -68,6 +69,7 @@ biometrics.authenticate = async reason => {
 dialogs.pick = async (title, filters) => (await app.openFileDialog({ title, ...(filters.length ? { filters } : {}) })) ?? undefined;
 listen();
 loadStatus();
+if (!process.env.TERMIO_SMOKE) startUpdateChecks();
 // Smoke test of a built executable: TERMIO_SMOKE=1 with TERMIO_VAULT pointing at a scratch file
 // creates a vault there and opens a local terminal straight away.
 if (process.env.TERMIO_SMOKE) {

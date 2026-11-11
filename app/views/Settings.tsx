@@ -1,7 +1,8 @@
 import { Column, Modal, Pressable, Row, Scroll, Select, Text, viewport } from "@tarve/core";
+import { applyUpdate, canSelfUpdate, checkUpdates, openPage, releasePage, updates, updatesConfigured, version } from "../state/updates";
 import { saveAppearance, setFingerprint, ui, type Appearance } from "../state/store";
 import { Glyph, type IconId } from "../ui/icons";
-import { ANDROID, compact, dialogWidth, IconAction, Segments, WINDOWS } from "../ui/kit";
+import { Action, ANDROID, compact, dialogWidth, IconAction, relativeTime, Segments, WINDOWS } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
 /** Android ships few monospace faces; the desktop list names fonts it never has. */
@@ -28,12 +29,13 @@ const SHELLS = [
   { value: "wsl.exe", label: "WSL" },
 ];
 
-type Page = "appearance" | "terminal";
+type Page = "appearance" | "terminal" | "about";
 let page: Page = "appearance";
 
 const PAGES: { value: Page; label: string; icon: IconId }[] = [
   { value: "appearance", label: "Appearance", icon: "settings" },
   { value: "terminal", label: "Terminal", icon: "terminal" },
+  { value: "about", label: "About", icon: "download" },
 ];
 
 /** One setting: label and help on the left, the control on the right, a hairline between rows. */
@@ -106,6 +108,41 @@ function SettingsNav({ height }: { height: number }) {
   );
 }
 
+/** What the updates row says, from the last check. */
+function updateHint(): string {
+  if (!updatesConfigured()) return "Updates are not set up in this build.";
+  const update = updates.update;
+  switch (updates.state) {
+    case "checking": return "Checking GitHub for a newer release…";
+    case "downloading": return `Downloading ${update?.version ?? ""}: ${updates.total ? Math.round(updates.received / updates.total * 100) : 0}%`;
+    case "available": return `Termio ${update!.version} is available.${update!.notes ? " " + update!.notes : ""}`;
+    case "current": return `Up to date, checked ${relativeTime(updates.checkedAt)}.`;
+    case "error": return `The last check failed: ${updates.error}`;
+    default: return "Checked on launch and every few hours.";
+  }
+}
+
+function About() {
+  const busy = updates.state === "checking" || updates.state === "downloading";
+  const install = canSelfUpdate() ? "Install and restart" : ANDROID ? "Download APK" : "Open download page";
+  return (
+    <Column>
+      <Setting label="Version" hint="Termio, an SSH terminal for slow and distant links.">
+        <Text size={13} weight={600} color={color.muted}>{version}</Text>
+      </Setting>
+      <Setting label="Updates" hint={updateHint()}>
+        <Row gap={8}>
+          {updates.state === "available" ? <Action label={install} tone="primary" icon="download" onClick={() => { void applyUpdate(); }} /> : null}
+          <Action label="Check now" icon="refresh" disabled={busy || !updatesConfigured()} onClick={() => { void checkUpdates(); }} />
+        </Row>
+      </Setting>
+      <Setting label="Release notes" hint="Every version and its changes on GitHub.">
+        <Action label="Open" onClick={() => openPage(releasePage())} />
+      </Setting>
+    </Column>
+  );
+}
+
 /** App settings in a dialog, saved in the vault so they follow it to every device. */
 export function Settings() {
   const appearance: Appearance = ui.appearance;
@@ -151,8 +188,10 @@ export function Settings() {
                   </Setting>
                   <Column style={{ padding: { top: 18 } }}><Preview appearance={appearance} scheme={scheme} /></Column>
                 </Column>
-              ) : (
-                <Column>
+              ) : page === "about" ? (
+                <About />
+                ) : (
+                  <Column>
                   <Setting label="Cursor">
                     <Segments value={appearance.cursor} options={[{ value: "block", label: "Block" }, { value: "beam", label: "Bar" }, { value: "underline", label: "Underline" }] as const} onChange={cursor => saveAppearance({ cursor })} />
                   </Setting>
