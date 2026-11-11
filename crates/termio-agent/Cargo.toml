@@ -1,0 +1,20 @@
+[package]
+name = "termio-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+getrandom = "0.3"
+hex = "0.4.3"
+portable-pty = "0.9.0"
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+sha2 = "0.11.1"
+termio-proto = { version = "0.1.0", path = "../termio-proto" }
+termio-vt = { version = "0.1.0", path = "../termio-vt" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "io-std"] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.191"

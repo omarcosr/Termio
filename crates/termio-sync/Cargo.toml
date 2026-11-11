@@ -1,0 +1,19 @@
+[package]
+name = "termio-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+getrandom = "0.3"
+hex = { version = "0.4.3", features = ["serde"] }
+rusty-s3 = "0.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+termio-vault = { version = "0.1.0", path = "../termio-vault" }
+ureq = "3.5.1"
+url = "2.5.8"
+
+[dev-dependencies]
+termio-vault = { path = "../termio-vault" }

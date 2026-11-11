@@ -1,0 +1,20 @@
+[package]
+name = "termio-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+termio-render = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+arboard = { version = "3.7.0", default-features = false }
+termio-vt = { version = "0.1.0", path = "../termio-vt" }
+termio-transport = { version = "0.1.0", path = "../termio-transport" }
+termio-vault = { version = "0.1.0", path = "../termio-vault" }
+termio-sync = { version = "0.1.0", path = "../termio-sync" }
+tokio = { version = "1.54.1", features = ["sync"] }
+zeroize = "1.9.1"

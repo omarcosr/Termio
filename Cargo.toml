@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/termio-core", "crates/termio-vt", "crates/termio-render", "crates/termio-vault", "crates/termio-sync", "crates/termio-transport", "crates/termio-proto", "crates/termio-testkit", "crates/termio-agent"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+termio-vt = { path = "crates/termio-vt" }
+termio-render = { path = "crates/termio-render" }
+termio-vault = { path = "crates/termio-vault" }
+termio-sync = { path = "crates/termio-sync" }
+termio-transport = { path = "crates/termio-transport" }
+termio-proto = { path = "crates/termio-proto" }
+termio-testkit = { path = "crates/termio-testkit" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

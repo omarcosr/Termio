@@ -1,0 +1,41 @@
+{
+  "name": "termio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SSH terminal for slow and distant links",
+  "scripts": {
+    "start": "bun app/main.tsx",
+    "dev": "tarve dev app/main.tsx",
+    "native": "cargo build --release -p termio-core",
+    "native:debug": "cargo build -p termio-core",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "spike": "bun scripts/spike.tsx",
+    "check:terminal": "bun scripts/terminal-check.tsx",
+    "check:ui": "bun scripts/ui-check.tsx",
+    "check:perf": "cargo test --release -p termio-core flood -- --nocapture && cargo test --release -p termio-agent --test agent flood -- --nocapture && bun scripts/terminal-check.tsx",
+    "check": "cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && tsc --noEmit && bun test && bun run check:perf",
+    "agent": "cargo build --release -p termio-agent",
+    "build": "cargo build --release -p termio-core && tarve build app/main.tsx --outfile dist/Termio.exe",
+    "package": "tarve package dist/Termio.exe --format zip --version 0.1.0 --out dist/packages"
+  },
+  "dependencies": {
+    "@tarve/core": "^0.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/bun": "latest"
+  },
+  "tarve": {
+    "name": "Termio",
+    "description": "SSH terminal for slow and distant links",
+    "appId": "Termio.App",
+    "tarvePluginApi": 1,
+    "plugin": "./app/core/plugin.ts",
+    "native": {
+      "win32-x64": "./target/release/termio_core.dll",
+      "linux-x64": "./target/release/libtermio_core.so"
+    }
+  }
+}

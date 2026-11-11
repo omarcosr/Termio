@@ -1,0 +1,8 @@
+[package]
+name = "termio-vt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal = "0.26.0"

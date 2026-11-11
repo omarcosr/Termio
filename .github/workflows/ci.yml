@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: cargo build --release -p termio-core
+      # Clippy, every Rust and Bun test, the typecheck, and the performance gates: emulator
+      # throughput, flood bandwidth through the agent, and zero frames while idle.
+      - run: bun run check
+        env:
+          SPIKE_RENDERER: cpu
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termio-windows-x64
+          path: dist/Termio.exe
+
+  agent-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # The agent runs on the servers: a static binary that needs nothing installed there.
+      - run: cargo test -p termio-agent -p termio-proto
+      - run: cargo build --release -p termio-agent --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: termio-agent-linux-x64
+          path: target/x86_64-unknown-linux-musl/release/termio-agent
