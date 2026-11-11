@@ -116,6 +116,13 @@ async function scan(source: ImportSource): Promise<void> {
 }
 
 /** Opens the import picker on `~/.ssh/config`. */
+/** Closes the import dialog; false when it was not open (Android Back). */
+export function closeImport(): boolean {
+  if (!importOpen) return false;
+  importOpen = false;
+  return true;
+}
+
 function openImport(): void {
   importKeys = true;
   importOpen = true;

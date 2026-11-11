@@ -3,7 +3,7 @@
 
 use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::events;
-use crate::session::{KeyEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, PointerEvent, PointerPhase, Session};
+use crate::session::{KeyEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, PointerEvent, PointerPhase, Select, SelectionView, Session};
 use crate::surface::{Invalidator, Scene};
 use serde_json::json;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -421,6 +421,39 @@ impl Sink for TerminalSession {
 }
 
 impl Session for TerminalSession {
+    fn select(&self, action: Select) -> Option<SelectionView> {
+        let mut state = self.state();
+        match action {
+            Select::Word(x, y) => {
+                let hit = Self::hit(&state, x, y)?;
+                state.vt.select(SelectionKind::Word, hit.line, hit.column, hit.right_half);
+                state.selecting = true;
+            }
+            Select::Range(from, to) => {
+                let (Some(a), Some(b)) = (Self::hit(&state, from.0, from.1), Self::hit(&state, to.0, to.1)) else { return None };
+                state.vt.select_range((a.line, a.column), (b.line, b.column));
+            }
+            Select::All => state.vt.select_all(),
+            Select::Clear => state.vt.clear_selection(),
+            Select::Get => {}
+        }
+        let view = (|| {
+            let text = state.vt.selection_text()?;
+            let metrics = state.metrics?;
+            let ((first_line, first_column), (last_line, last_column)) = state.vt.selection_bounds()?;
+            let (w, h, padding) = (metrics.cell_w as f32, metrics.cell_h as f32, state.padding as f32);
+            Some(SelectionView {
+                text,
+                start: (padding + first_column as f32 * w, padding + first_line as f32 * h),
+                end: (padding + (last_column + 1) as f32 * w, padding + (last_line + 1) as f32 * h),
+                cell: (w, h),
+            })
+        })();
+        drop(state);
+        self.invalidator.invalidate();
+        view
+    }
+
     fn scene(self: Arc<Self>) -> Arc<dyn Scene> {
         self
     }

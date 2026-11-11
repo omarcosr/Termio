@@ -205,7 +205,11 @@ pub fn replay(frame: &Frame) -> Vec<u8> {
     // Hide the cursor while painting, so it never flickers through the rows.
     out.extend_from_slice(b"\x1b[?25l");
     if frame.full {
-        out.extend_from_slice(b"\x1b[0m\x1b[2J");
+        // Home and erase below, not ED 2: a terminal like alacritty moves the screen ED 2 clears
+        // into its scrollback, so every full frame (one per resize, as a soft keyboard opens or
+        // closes) stacked another copy of the screen in the history, and a growing window pulled
+        // those copies into view.
+        out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[J");
     }
     for (index, row) in &frame.rows {
         let _ = write!(out, "\x1b[{};1H\x1b[0m\x1b[2K", index + 1);

@@ -36,7 +36,33 @@ pub struct PointerEvent {
     pub mods: u32,
 }
 
+/// What a touch screen does to a terminal's selection (device pixels, relative to the surface).
+pub enum Select {
+    /// Long press: the word under the finger, extended by the moves that follow.
+    Word(f32, f32),
+    /// A handle dragged: from one point to another, character by character.
+    Range((f32, f32), (f32, f32)),
+    All,
+    Clear,
+    /// Only reports the selection.
+    Get,
+}
+
+/// The selection as the UI draws handles and actions around it: device pixels.
+pub struct SelectionView {
+    pub text: String,
+    /// Top-left of the first selected cell.
+    pub start: (f32, f32),
+    /// Bottom-right of the last selected cell.
+    pub end: (f32, f32),
+    pub cell: (f32, f32),
+}
+
 pub trait Session: Send + Sync {
+    /// Touch selection; `None` when nothing is selected afterwards.
+    fn select(&self, _action: Select) -> Option<SelectionView> {
+        None
+    }
     fn scene(self: Arc<Self>) -> Arc<dyn Scene>;
     fn key(&self, event: &KeyEvent<'_>);
     /// Text that did not come from a key: paste, IME commit.

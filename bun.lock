@@ -64,7 +64,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ZENoHJBxA20C2zFzh6AI4fT6RraMzjYw4xKWemRTRmRVtN9c5DcH9r/f2ihEkMjOW5eGgrwCslG/+Y/3bL+DHQ=="],
 
-    "@tarve/core": ["@tarve/core@../tarve/dist/tarve-core-0.11.1.tgz", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "bin": { "tarve": "./dist/npm/cli.js" } }, "sha512-1xKrygMvjr/u9hSUpjDPEWVdqfCrh0vvnAdRO8E1Nhy8xZxJQdVvT9MJiKdXSu0F171ctChlGbDSgSansCOTfQ=="],
+    "@tarve/core": ["@tarve/core@../tarve/dist/tarve-core-0.11.1.tgz", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "bin": { "tarve": "./dist/npm/cli.js" } }, "sha512-3pm7KEYOL9umsegvDNeZkAJXRxmXxSnPKvIzBb0HjUPTEcs9t69s0RY7zDckxUoH4DZ8LtNgW8/5fS7GOZDsPQ=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 

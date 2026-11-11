@@ -50,6 +50,61 @@ fn default_path() -> PathBuf {
     base.join("Termio").join("vault.termio")
 }
 
+/// The sealed vault password beside the vault: only this device's Keystore can open it.
+fn unlock_file() -> PathBuf {
+    path().with_extension("unlock")
+}
+
+const UNLOCK_KEY: &str = "termio.unlock";
+
+#[cfg(target_os = "android")]
+fn save_unlock(password: &str) -> Result<Value, String> {
+    let sealed = crate::android::seal(UNLOCK_KEY, password.as_bytes())?;
+    std::fs::write(unlock_file(), sealed).map_err(|error| error.to_string())?;
+    Ok(json!({}))
+}
+
+#[cfg(target_os = "android")]
+fn load_unlock() -> Result<Value, String> {
+    let sealed = std::fs::read(unlock_file()).map_err(|error| error.to_string())?;
+    let plain = crate::android::open(UNLOCK_KEY, &sealed)?;
+    Ok(json!({ "password": String::from_utf8(plain).map_err(|error| error.to_string())? }))
+}
+
+#[cfg(target_os = "android")]
+fn android_keep_alive(request: &Value) -> Result<Value, String> {
+    let active = request["active"].as_bool().unwrap_or(false);
+    crate::android::keep_alive(active, request["title"].as_str().unwrap_or(""), request["text"].as_str().unwrap_or(""))?;
+    Ok(json!({}))
+}
+
+#[cfg(target_os = "android")]
+fn android_background() -> Result<Value, String> {
+    crate::android::to_background()?;
+    Ok(json!({}))
+}
+
+#[cfg(not(target_os = "android"))]
+fn save_unlock(_password: &str) -> Result<Value, String> {
+    let _ = UNLOCK_KEY;
+    Err("fingerprint unlock is only on Android".into())
+}
+
+#[cfg(not(target_os = "android"))]
+fn load_unlock() -> Result<Value, String> {
+    Err("fingerprint unlock is only on Android".into())
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_keep_alive(_request: &Value) -> Result<Value, String> {
+    Ok(json!({}))
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_background() -> Result<Value, String> {
+    Err("only on Android".into())
+}
+
 fn path() -> PathBuf {
     PATH.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(default_path)
 }
@@ -376,6 +431,18 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             use crate::clipboard::Clipboard;
             crate::clipboard::SystemClipboard.set(value).map(|_| json!({}))
         }),
+        // Android only: the notification that keeps sessions running in the background, and
+        // Back on the first screen sending the app away instead of ending it.
+        "android.keepAlive" => android_keep_alive(request),
+        "android.background" => android_background(),
+        // The vault password sealed by the Android Keystore, for unlocking with a fingerprint.
+        "unlock.saved" => Ok(json!({ "saved": unlock_file().is_file() })),
+        "unlock.save" => text(request, "password").and_then(save_unlock),
+        "unlock.load" => load_unlock(),
+        "unlock.forget" => {
+            let _ = std::fs::remove_file(unlock_file());
+            Ok(json!({}))
+        }
         "sync.vaults" => (|| {
             // The vaults in a bucket, by name, for the picker.
             use termio_sync::Store;
@@ -433,6 +500,25 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
                 Ok(session)
             })?;
             Ok(json!({ "id": id }))
+        })(),
+        "session.select" => (|| {
+            use crate::session::Select;
+            let id = request["id"].as_u64().ok_or("missing id")? as u32;
+            let point = |key: &str| (request[key]["x"].as_f64().unwrap_or(0.0) as f32, request[key]["y"].as_f64().unwrap_or(0.0) as f32);
+            let action = match request["action"].as_str().unwrap_or("get") {
+                "word" => Select::Word(point("at").0, point("at").1),
+                "range" => Select::Range(point("from"), point("to")),
+                "all" => Select::All,
+                "clear" => Select::Clear,
+                _ => Select::Get,
+            };
+            let view = registry().with(id, |entry| entry.session.select(action)).ok_or("unknown session")?;
+            Ok(json!({ "selection": view.map(|view| json!({
+                "text": view.text,
+                "start": { "x": view.start.0, "y": view.start.1 },
+                "end": { "x": view.end.0, "y": view.end.1 },
+                "cell": { "w": view.cell.0, "h": view.cell.1 },
+            })) }))
         })(),
         "session.search" | "session.searchNext" | "session.searchClear" => (|| {
             let id = request["id"].as_u64().ok_or("missing id")? as u32;

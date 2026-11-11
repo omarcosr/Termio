@@ -5,6 +5,14 @@ import { Glyph } from "../ui/icons";
 import { compact, gutter, Action, Field, Hint, IconAction, Label, Segments, mono, relativeTime } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 
+/** Closes the new-key form; false when it was not open (Android Back). */
+export function closeNewKey(): boolean {
+  if (!draft.open) return false;
+  draft.open = false;
+  ui.error = undefined;
+  return true;
+}
+
 const draft = { mode: "generate" as "generate" | "import", open: false, name: "", privateKey: "", passphrase: "" };
 
 function copy(text: string, what: string): void {

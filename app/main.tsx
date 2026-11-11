@@ -1,4 +1,4 @@
-import { Window, createApp, darkTheme, lightTheme } from "@tarve/core";
+import { Window, authenticate, createApp, darkTheme, lightTheme, type WindowCloseRequestEvent } from "@tarve/core";
 import { core, termioCore, type KeyInput } from "./core/plugin";
 import {
   activate,
@@ -22,15 +22,30 @@ import {
   openLocal,
   setRenderer,
   split,
-  ui, closeTermSearch, openTermSearch, setTermQuery, stepTermSearch, reportFault } from "./state/store";
+  ui, biometrics, closeTermSearch, openTermSearch, setTermQuery, stepTermSearch, reportFault } from "./state/store";
 import { color, font, isLight } from "./ui/tokens";
-import { Root } from "./views/Shell";
+import { handleBack, Root } from "./views/Shell";
 import { cancelPath } from "./views/Files";
-import { forwardPointer, imeKey, sessionOfIme, sessionOfNode } from "./views/TerminalPane";
+import { forwardPointer, imeKey, sessionOfIme, sessionOfNode, touchPointer } from "./views/TerminalPane";
+import { touch } from "./ui/kit";
+
+/**
+ * Android's Back arrives as a close request. It goes back a step in the app first; on the first
+ * screen it sends the app to the background instead of ending it, so open sessions survive.
+ */
+function onCloseRequest(event: WindowCloseRequestEvent): void {
+  if ((process.platform as string) !== "android") return;
+  event.preventDefault();
+  if (ui.phase === "ready" && handleBack()) {
+    app.update();
+    return;
+  }
+  try { core().call({ op: "android.background" }); } catch { /* stays open */ }
+}
 
 function App() {
   return (
-    <Window title="Termio" width={1240} height={780} theme={isLight() ? lightTheme : darkTheme} style={{ background: color.canvas, fontFamily: font.ui, foreground: color.text }}>
+    <Window title="Termio" onCloseRequest={onCloseRequest} width={1240} height={780} theme={isLight() ? lightTheme : darkTheme} style={{ background: color.canvas, fontFamily: font.ui, foreground: color.text }}>
       <Root />
     </Window>
   );
@@ -46,6 +61,10 @@ setRenderer(() => app.update());
 dialogs.open = async () => (await app.openFilesDialog({ title: "Upload files" })) ?? [];
 dialogs.save = async name => (await app.saveFileDialog({ title: "Save as", fileName: name })) ?? undefined;
 dialogs.focus = id => app.focus(id);
+biometrics.authenticate = async reason => {
+  const result = await authenticate({ reason });
+  return { supported: result.supported, success: result.success, error: result.code === "canceled" ? undefined : result.error };
+};
 dialogs.pick = async (title, filters) => (await app.openFileDialog({ title, ...(filters.length ? { filters } : {}) })) ?? undefined;
 listen();
 loadStatus();
@@ -189,7 +208,8 @@ app.onEvent(event => {
     if (target !== undefined) {
       // Clicking into a pane of a split gives it the keyboard.
       if (event.phase === "down") focusPane(target);
-      forwardPointer(target, event.phase, event);
+      if (touch()) touchPointer(target, event.phase, event);
+      else forwardPointer(target, event.phase, event);
     }
   }
 });

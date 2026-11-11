@@ -174,6 +174,8 @@ export const ui = {
   termSearch: undefined as { session: number; query: string; count: number } | undefined,
   paletteQuery: "",
   toast: undefined as { text: string; tone: "ok" | "error" } | undefined,
+  /** Android: the vault password is sealed here and a fingerprint unlocks it. */
+  fingerprint: false,
 };
 
 /** Native file pickers, provided by the app handle once the window is up. */
@@ -188,7 +190,80 @@ export const dialogs = {
 
 let render: () => void = () => {};
 export function setRenderer(next: () => void): void {
-  render = next;
+  render = () => {
+    next();
+    syncKeepAlive();
+  };
+}
+
+const ANDROID = (process.platform as string) === "android";
+
+/**
+ * Android freezes an app in the background, and its sessions drop. While any is open a
+ * foreground service with a notification ("2 sessions open") keeps the process running.
+ */
+let keptAlive = "";
+function syncKeepAlive(): void {
+  if (!ANDROID) return;
+  const terminals = Object.values(ui.sessions).filter(info => info.status !== "closed").length;
+  const files = ui.tabs.filter(tab => tab.kind === "files").length;
+  const open = terminals + files;
+  const text = open === 0 ? "" : [terminals ? (terminals === 1 ? "1 session" : `${terminals} sessions`) : "", files ? (files === 1 ? "1 file browser" : `${files} file browsers`) : ""].filter(Boolean).join(", ") + " open";
+  if (text === keptAlive) return;
+  keptAlive = text;
+  try { core().call({ op: "android.keepAlive", active: open > 0, title: "Termio is connected", text }); } catch { /* best effort */ }
+}
+
+// --- Fingerprint unlock (Android) ------------------------------------------------------------
+
+/** The password the vault was last opened with, while it is open: enabling fingerprint unlock seals it. */
+let openedWith: string | undefined;
+
+/** Fingerprint (or device PIN) checks, provided by the app handle once the window is up. */
+export const biometrics = {
+  authenticate: async (_reason: string): Promise<{ supported: boolean; success: boolean; error?: string }> => ({ supported: false, success: false }),
+};
+
+function unlockSaved(): boolean {
+  if (!ANDROID) return false;
+  try { return core().call<{ saved: boolean }>({ op: "unlock.saved" }).saved; } catch { return false; }
+}
+
+/** The vault password is sealed on this device and a fingerprint opens it. */
+export function fingerprintEnabled(): boolean {
+  return ui.fingerprint;
+}
+
+export async function unlockWithFingerprint(): Promise<void> {
+  const check = await biometrics.authenticate("Unlock Termio");
+  if (!check.success) {
+    if (check.error) { ui.error = check.error; render(); }
+    return;
+  }
+  const password = attempt(() => core().call<{ password: string }>({ op: "unlock.load" }))?.password;
+  if (password === undefined) return render();
+  unlockVault(password);
+  if (ui.phase !== "ready") {
+    // The password changed elsewhere (a synced vault): the sealed one is useless now.
+    try { core().call({ op: "unlock.forget" }); } catch { /* gone */ }
+    ui.fingerprint = false;
+    ui.error = "The saved password no longer opens the vault: type it once to unlock.";
+    render();
+  }
+}
+
+export async function setFingerprint(on: boolean): Promise<void> {
+  if (!on) {
+    try { core().call({ op: "unlock.forget" }); } catch { /* gone */ }
+    ui.fingerprint = false;
+    return render();
+  }
+  if (!openedWith) return toast("Lock and unlock the vault with its password once, then turn this on", "error");
+  const check = await biometrics.authenticate("Turn on fingerprint unlock");
+  if (!check.success) return toast(check.supported ? check.error ?? "Not confirmed" : "This device has no fingerprint or screen lock", "error");
+  if (attempt(() => core().call({ op: "unlock.save", password: openedWith })) === undefined) return toast(ui.error ?? "Could not save", "error");
+  ui.fingerprint = true;
+  toast("Fingerprint unlock is on");
 }
 export function refresh(): void {
   render();
@@ -265,6 +340,7 @@ export function loadStatus(): void {
   } else {
     ui.phase = status.exists ? "locked" : "create";
   }
+  ui.fingerprint = unlockSaved();
 }
 
 export function createVault(password: string, confirm: string): void {
@@ -272,16 +348,23 @@ export function createVault(password: string, confirm: string): void {
     ui.error = "The two passwords differ.";
     return render();
   }
-  if (attempt(() => core().call({ op: "vault.create", password })) !== undefined) enterVault();
+  if (attempt(() => core().call({ op: "vault.create", password })) !== undefined) {
+    openedWith = password;
+    enterVault();
+  }
 }
 
 export function unlockVault(password: string): void {
-  if (attempt(() => core().call({ op: "vault.unlock", password })) !== undefined) enterVault();
+  if (attempt(() => core().call({ op: "vault.unlock", password })) !== undefined) {
+    openedWith = password;
+    enterVault();
+  }
 }
 
 export function joinVault(password: string, r2: SyncForm): void {
   const joined = attempt(() => core().call<{ pulled: number }>({ op: "vault.join", password, ...r2 }));
   if (joined) {
+    openedWith = password;
     enterVault();
     toast(`Joined the synced vault: ${joined.pulled} items`);
   }
@@ -309,6 +392,7 @@ function enterVault(): void {
 export function lockVault(): void {
   for (const tab of [...ui.tabs]) closeTab(tab.id);
   core().call({ op: "vault.lock" });
+  openedWith = undefined;
   Object.assign(ui, { phase: "locked", hosts: [], keys: [], known: [], editing: undefined, active: "home", prompts: [] });
   render();
 }
@@ -1046,6 +1130,13 @@ export function loadAppearance(): void {
   const saved = attempt(() => core().call<{ records: VaultRecord<Partial<Appearance>>[] }>({ op: "records.list", kind: "settings" }))?.records.find(record => record.id === "appearance");
   ui.appearance = { ...DEFAULT_APPEARANCE, ...saved?.data };
   applyAppearance();
+}
+
+/** Shows an appearance without saving it (a pinch in progress); saveAppearance keeps it. */
+export function previewAppearance(change: Partial<Appearance>): void {
+  ui.appearance = { ...ui.appearance, ...change };
+  applyAppearance();
+  render();
 }
 
 export function saveAppearance(change: Partial<Appearance>): void {

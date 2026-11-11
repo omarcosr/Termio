@@ -34,13 +34,13 @@ import type { DragEndEvent } from "@tarve/core";
 import { Glyph, type IconId } from "../ui/icons";
 import { ANDROID, touch, Action, compact, dialogWidth, IconAction, mono, TextField } from "../ui/kit";
 import { color, font, radius } from "../ui/tokens";
-import { Files } from "./Files";
+import { cancelPath, Files } from "./Files";
 import { HostKeyPrompt } from "./HostKeyPrompt";
-import { Hosts } from "./Hosts";
-import { Keychain, KnownHosts } from "./Keychain";
+import { closeImport, Hosts } from "./Hosts";
+import { closeNewKey, Keychain, KnownHosts } from "./Keychain";
 import { Snippets } from "./Snippets";
 import { Sync } from "./Sync";
-import { openKeyboard, SoftKeyboard, TerminalPane } from "./TerminalPane";
+import { dropSelection, openKeyboard, tapOpensKeyboard, pinchFont, SelectionOverlay, SoftKeyboard, TerminalPane } from "./TerminalPane";
 import { Unlock } from "./Unlock";
 import { Settings } from "./Settings";
 import { Forwards } from "./Forwards";
@@ -503,9 +503,10 @@ function TerminalTab({ tab, visible }: { tab: Tab; visible: boolean }) {
               {/* Not focusable and square: a Pressable takes the keyboard focus on click and Tarve then
                   drew its rounded focus ring around the whole terminal. Splits mark the focused pane
                   with the border above instead. */}
-              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch()) openKeyboard(session); }} style={{ position: "relative", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0, outlineWidth: 0, focus: { outlineWidth: 0 }, focusVisible: { outlineWidth: 0 } }}>
+              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch() && tapOpensKeyboard(session)) openKeyboard(session); }} onPinch={pinchFont} style={{ position: "relative", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0, outlineWidth: 0, focus: { outlineWidth: 0 }, focusVisible: { outlineWidth: 0 } }}>
                 <TerminalPane session={session} />
                 <SessionOverlay info={info} />
+                {touch() ? <SelectionOverlay session={session} /> : null}
                 {ui.termSearch?.session === session ? <TermSearch /> : null}
                 {ui.drag && visible && !carried.includes(session) ? <DropZones session={session} /> : null}
               </Pressable>
@@ -597,6 +598,29 @@ function TitleActions() {
       {settings}
     </Row>
   );
+}
+
+/**
+ * Android Back: closes what sits on top (a dialog, a form, the search bar), then leaves a tab
+ * for the vault, then a section for Hosts. Returns false when there is nothing left to go back
+ * from: the app then goes to the background, keeping its sessions.
+ */
+export function handleBack(): boolean {
+  if (ui.fault) { dismissFault(); return true; }
+  if (switcherOpen) { switcherOpen = false; return true; }
+  if (ui.paletteOpen) { ui.paletteOpen = false; return true; }
+  if (ui.settingsOpen) { ui.settingsOpen = false; return true; }
+  if (closeImport()) return true;
+  if (ui.termSearch) { closeTermSearch(); return true; }
+  if (dropSelection()) return true;
+  const tab = ui.tabs.find(item => item.id === ui.active);
+  if (tab?.files && cancelPath(tab.files)) return true;
+  if (tab) { activate("home"); return true; }
+  if (ui.editing) { ui.editing = undefined; ui.error = undefined; return true; }
+  if (ui.editingSnippet) { ui.editingSnippet = undefined; ui.error = undefined; return true; }
+  if (closeNewKey()) return true;
+  if (ui.view !== "hosts") { ui.view = "hosts"; ui.error = undefined; return true; }
+  return false;
 }
 
 export function Root() {

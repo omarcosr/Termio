@@ -149,6 +149,16 @@ try {
   store.openLocal();
   await sleep(2500);
   await shot("terminal");
+  if (process.env.TERMIO_TOUCH === "1") {
+    // A long press on a word: handles at its ends and the action bar.
+    const { selectForTest } = await import("../app/views/TerminalPane");
+    const session = store.activeTab()!.focus;
+    selectForTest(session, "word", { x: 40, y: 30 });
+    await shot("terminal-selection");
+    selectForTest(session, "all");
+    await shot("terminal-select-all");
+    selectForTest(session, "clear");
+  }
   // A crowded tab strip: long titles and several tabs, as a phone gets them.
   const crowd = ui.tabs.length;
   for (const title of ["Files · Instafast netcup six", "root@instafast:~ — a very long title"]) {
@@ -165,7 +175,9 @@ try {
   if ((width ?? 0) < 720) {
     await test.getByRole("button", { name: /open tabs/ }).click();
     await shot("tabs-switcher", true);
-    await test.getByRole("tab", { name: "Vault" }).click().catch(() => undefined);
+    // Back to the vault through the list, which closes it.
+    await test.getByText("Hosts, keys, snippets").click();
+    await test.waitFor(() => ui.active === "home" || undefined, { timeout: 3000 });
   }
   ui.tabs.splice(crowd);
   ui.active = ui.tabs[ui.tabs.length - 1]!.id;

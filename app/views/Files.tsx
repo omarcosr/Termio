@@ -61,10 +61,11 @@ function editPath(files: FilesInfo): void {
 export const editPathForTest = editPath;
 
 /** Leaves the field without going anywhere (Escape, or a tap on the list). */
-export function cancelPath(files: FilesInfo): void {
-  if (draft(files).path === undefined) return;
+export function cancelPath(files: FilesInfo): boolean {
+  if (draft(files).path === undefined) return false;
   draft(files).path = undefined;
   refresh();
+  return true;
 }
 
 /** The path bar: the folders as text; a tap turns it into a field, Enter goes there. */

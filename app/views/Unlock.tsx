@@ -1,5 +1,5 @@
 import { Column, Pressable, Row, Scroll, Select, Text } from "@tarve/core";
-import { createSyncedVault, createVault, joinVault, listVaults, ui, unlockVault, type SyncForm } from "../state/store";
+import { createSyncedVault, createVault, joinVault, listVaults, ui, unlockVault, unlockWithFingerprint, type SyncForm } from "../state/store";
 import { Glyph } from "../ui/icons";
 import { compact, Action, Field, mono } from "../ui/kit";
 import { CloudflareConnect, cf } from "./Cloudflare";
@@ -39,6 +39,9 @@ function chooseVault(value: string): void {
   form.name = value === NEW ? (form.vaults?.includes("termio") ? "" : "termio") : value;
 }
 
+/** The fingerprint prompt comes up by itself once per lock screen, as banking apps do. */
+let prompted = false;
+
 function Switch({ to, label }: { to: "create" | "join" | "locked"; label: string }) {
   return (
     <Pressable focusable onClick={() => { ui.phase = to; ui.error = undefined; }} style={{ hover: { opacity: 0.8 } }}>
@@ -49,6 +52,12 @@ function Switch({ to, label }: { to: "create" | "join" | "locked"; label: string
 
 /** Before anything else: open the vault, create the first one, or join a synced one. */
 export function Unlock() {
+  const fingerprint = ui.phase === "locked" && ui.fingerprint;
+  if (!fingerprint) prompted = false;
+  else if (!prompted) {
+    prompted = true;
+    setTimeout(() => { void unlockWithFingerprint(); }, 0);
+  }
   const creating = ui.phase === "create";
   const joining = ui.phase === "join";
   const title = creating ? "Create your vault" : joining ? "Join a synced vault" : "Unlock Termio";
@@ -115,7 +124,8 @@ export function Unlock() {
             </Row>
           ) : null}
           <Action tone="primary" label={creating ? "Create vault" : joining ? (form.hasVault === false ? "Create synced vault" : form.hasVault ? "Download vault" : "Find vaults") : "Unlock"} disabled={joining && (!form.bucket || (form.hasVault === false && !form.name.trim()))} onClick={submit} />
-          {creating ? (
+          {fingerprint ? <Action icon="shield" label="Unlock with fingerprint" onClick={() => { void unlockWithFingerprint(); }} /> : null}
+            {creating ? (
             <Column gap={10}>
               <Row gap={10} align="center">
                 <Row flex={1} style={{ height: 1, background: color.line }} />

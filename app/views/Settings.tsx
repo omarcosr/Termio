@@ -1,5 +1,5 @@
 import { Column, Modal, Pressable, Row, Scroll, Select, Text, viewport } from "@tarve/core";
-import { saveAppearance, ui, type Appearance } from "../state/store";
+import { saveAppearance, setFingerprint, ui, type Appearance } from "../state/store";
 import { Glyph, type IconId } from "../ui/icons";
 import { ANDROID, compact, dialogWidth, IconAction, Segments, WINDOWS } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
@@ -159,6 +159,11 @@ export function Settings() {
                   <Setting label="Padding" hint="Space between the text and the edge of the pane.">
                     <Segments value={String(appearance.padding)} options={[0, 4, 6, 10, 16].map(padding => ({ value: String(padding), label: `${padding}` }))} onChange={value => saveAppearance({ padding: Number(value) })} />
                   </Setting>
+                  {ANDROID ? (
+                    <Setting label="Unlock with fingerprint" hint="The vault password is sealed by this phone's secure hardware; your fingerprint or screen lock opens it.">
+                      <Segments value={ui.fingerprint ? "on" : "off"} options={[{ value: "off", label: "Off" }, { value: "on", label: "On" }] as const} onChange={value => { void setFingerprint(value === "on"); }} />
+                    </Setting>
+                  ) : null}
                   {/* Only Windows offers a choice of shells; elsewhere a local tab runs the system's. */}
                   {WINDOWS ? (
                     <Setting label="Local shell" hint="What a new local tab runs.">

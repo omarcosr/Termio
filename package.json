@@ -44,6 +44,9 @@
     "copyright": "Copyright (c) 2026 Termio",
     "icon": "./assets/icon.png",
     "appId": "Termio.App",
+    "android": {
+      "permissions": ["FOREGROUND_SERVICE_SPECIAL_USE"]
+    },
     "tarvePluginApi": 1,
     "plugin": "./app/core/plugin.ts",
     "native": {

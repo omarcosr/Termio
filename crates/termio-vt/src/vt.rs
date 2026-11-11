@@ -411,6 +411,29 @@ impl Vt {
     pub fn selection_text(&self) -> Option<String> {
         self.term.selection_to_string().filter(|text| !text.is_empty())
     }
+
+    /// The first and last selected cells as (visible line, column): a line above the screen
+    /// (in the scrollback) is negative, one below it is `lines` or more.
+    pub fn selection_bounds(&self) -> Option<((i32, usize), (i32, usize))> {
+        let range = self.term.selection.as_ref()?.to_range(&self.term)?;
+        let offset = self.display_offset() as i32;
+        Some(((range.start.line.0 + offset, range.start.column.0), (range.end.line.0 + offset, range.end.column.0)))
+    }
+
+    /// Selects character by character from one visible cell to another, whichever comes first.
+    pub fn select_range(&mut self, from: (usize, usize), to: (usize, usize)) {
+        let (first, last) = if (from.0, from.1) <= (to.0, to.1) { (from, to) } else { (to, from) };
+        self.select(SelectionKind::Simple, first.0, first.1, false);
+        self.select_to(last.0, last.1, true);
+    }
+
+    /// Selects every line on the screen down to the last one with text.
+    pub fn select_all(&mut self) {
+        let columns = self.columns;
+        let last = (0..self.lines).rev().find(|&line| !self.row_text(line).trim().is_empty()).unwrap_or(0);
+        self.select(SelectionKind::Line, 0, 0, false);
+        self.select_to(last, columns - 1, true);
+    }
 }
 
 #[cfg(test)]
