@@ -30,5 +30,5 @@ Reading it:
   it is now, so it finishes in a fraction of the time, sends a thousandth of the bytes, and an
   interrupt answers in about one round trip.
 
-Not measured yet: the instafast server (its SSH port refused connections from this machine), packet
+Not measured yet: a second remote server (its SSH port refused connections from this machine), packet
 loss, and resuming after the link drops (covered by `crates/termio-agent/tests/drops.rs`).

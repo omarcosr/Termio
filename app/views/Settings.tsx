@@ -82,7 +82,7 @@ function Preview({ appearance, scheme }: { appearance: Appearance; scheme: (type
   const line = (parts: [string, string][]) => <Row>{parts.map(([text, tint], index) => <Text key={index} size={appearance.fontSize} color={tint} style={{ fontFamily: appearance.fontFamily, whiteSpace: "pre" }}>{text}</Text>)}</Row>;
   return (
     <Column gap={2} style={{ padding: appearance.padding + 10, radius: 10, background: background!, borderColor: color.line, borderWidth: 1 }}>
-      {line([["root@instafast", green!], [":", foreground!], ["~", blue!], ["$ ls -la", foreground!]])}
+      {line([["root@server", green!], [":", foreground!], ["~", blue!], ["$ ls -la", foreground!]])}
       {line([["drwxr-xr-x  ", foreground!], ["nginx-1.29.5", blue!], ["  error.log", red!]])}
       {line([["0O 1lI {}[] => != ", foreground!], [appearance.cursor === "beam" ? "▏" : appearance.cursor === "underline" ? "_" : "█", foreground!]])}
     </Column>

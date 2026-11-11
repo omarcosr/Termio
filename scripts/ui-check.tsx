@@ -161,11 +161,11 @@ try {
   }
   // A crowded tab strip: long titles and several tabs, as a phone gets them.
   const crowd = ui.tabs.length;
-  for (const title of ["Files · Instafast netcup six", "root@instafast:~ — a very long title"]) {
+  for (const title of ["Files · Production web server six", "root@web-server:~ — a very long title"]) {
     ui.tabs.push({ id: 900 + ui.tabs.length, kind: "files", panes: [], direction: "row", focus: 0, files: { id: 900 + ui.tabs.length, host: ui.hosts[0]!.id, state: "connecting", path: "/", loading: false, entries: [], transfers: [] } } as never);
     void title;
   }
-  ui.hosts[0]!.data.name = "Instafast netcup six with a long name";
+  ui.hosts[0]!.data.name = "Production web server six with a long name";
   await shot("tabs-crowded");
   // Swiped to the end, with the long one active: what the phone showed overlapping.
   ui.active = ui.tabs[ui.tabs.length - 1]!.id;
