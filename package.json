@@ -20,6 +20,7 @@
     "android:install": "bun run android && adb install -r dist/Termio.apk && adb shell monkey -p termio.app -c android.intent.category.LAUNCHER 1",
     "android:dev": "tarve dev app/main.tsx --target android-arm64",
     "check:features": "bun scripts/features-check.tsx",
+    "check:input": "bun scripts/input-bench.tsx",
     "bench": "cargo run --release -p termio-transport --example bench --",
     "check:perf": "cargo test --release -p termio-core flood -- --nocapture && cargo test --release -p termio-agent --test agent flood -- --nocapture && bun scripts/terminal-check.tsx",
     "check": "cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && tsc --noEmit && bun test && bun run check:perf",
