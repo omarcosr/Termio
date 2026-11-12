@@ -2,6 +2,7 @@ import { checkForUpdate, openExternal, type Update } from "@tarve/core";
 import type { canInstallUpdate, downloadUpdate, installUpdate } from "@tarve/core";
 import pkg from "../../package.json";
 import { refresh, toast } from "./store";
+import { core } from "../core/plugin";
 
 /**
  * Updates from GitHub Releases. Each release carries a `latest.json` signed with the key from
@@ -92,6 +93,7 @@ export function releasePage(update = updates.update): string {
 export async function checkUpdates(quiet = false): Promise<void> {
   if (!updatesConfigured() || updates.state === "checking" || updates.state === "downloading") return;
   updates.state = "checking";
+  provideEd25519();
   updates.error = undefined;
   refresh();
   try {
@@ -157,4 +159,29 @@ export function startUpdateChecks(): void {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+/**
+ * The manifest signature is checked with `crypto.subtle` (Ed25519), which the Android runtime does
+ * not provide: there the check went `undefined.importKey` and surfaced as an error dialog. This
+ * fills in just importKey("raw", Ed25519) and verify, backed by the Rust core (ring).
+ * The methods never throw synchronously: the Android engine reports a promise rejected before
+ * its caller awaits it as unhandled, even when the caller catches it.
+ */
+function provideEd25519(): void {
+  const web = globalThis as { crypto?: { subtle?: unknown } };
+  if (web.crypto?.subtle) return;
+  const raw = (data: ArrayBuffer | ArrayBufferView): number[] =>
+    Array.from(data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  const named = (algorithm: string | { name: string }) => (typeof algorithm === "string" ? algorithm : algorithm.name);
+  const later = <T>(work: () => T): Promise<T> => new Promise<T>(resolve => resolve(work()));
+  (web.crypto ??= {}).subtle = {
+    importKey: (format: string, data: ArrayBuffer | ArrayBufferView, algorithm: string | { name: string }) => later(() => {
+      if (format !== "raw" || named(algorithm) !== "Ed25519") throw new Error(`crypto.subtle.importKey(${format}, ${named(algorithm)}) is not available here`);
+      return { type: "public", algorithm: { name: "Ed25519" }, extractable: false, usages: ["verify"], raw: raw(data) };
+    }),
+    verify: (algorithm: string | { name: string }, key: { raw: number[] }, signature: ArrayBuffer | ArrayBufferView, data: ArrayBuffer | ArrayBufferView) => later(() => {
+      if (named(algorithm) !== "Ed25519") throw new Error(`crypto.subtle.verify(${named(algorithm)}) is not available here`);
+      return core().call<{ valid: boolean }>({ op: "crypto.verifyEd25519", publicKey: key.raw, signature: raw(signature), message: raw(data) }).valid;
+    }),
+  };
 }

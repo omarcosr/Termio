@@ -15,6 +15,7 @@ termio-vt = { version = "0.1.0", path = "../termio-vt" }
 termio-transport = { version = "0.1.0", path = "../termio-transport" }
 termio-vault = { version = "0.1.0", path = "../termio-vault" }
 termio-sync = { version = "0.1.0", path = "../termio-sync" }
+ring = "0.17"
 snap = "1"
 tokio = { version = "1.54.1", features = ["sync"] }
 xsalsa20poly1305 = "0.9"

@@ -305,6 +305,12 @@ fn target_from(vault: &Vault, id: &str, depth: usize) -> Result<Target, String> 
     })
 }
 
+/// A byte array the UI sent as a JSON list of numbers.
+fn bytes(request: &Value, name: &str) -> Result<Vec<u8>, String> {
+    let list = request[name].as_array().ok_or_else(|| format!("missing {name}"))?;
+    list.iter().map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()).ok_or_else(|| format!("{name} must be bytes"))).collect()
+}
+
 /// Control requests about the vault, records, sync and SSH. `None` when `op` is not one of them.
 pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
     Some(match operation {
@@ -461,6 +467,12 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             }
         })(),
         "cloudflare.tokenUrl" => Ok(json!({ "url": termio_sync::cloudflare::TOKEN_URL })),
+        // Ed25519 for the update manifest: the Android runtime has no crypto.subtle (app/state/updates.ts).
+        "crypto.verifyEd25519" => (|| {
+            let (key, signature, message) = (bytes(request, "publicKey")?, bytes(request, "signature")?, bytes(request, "message")?);
+            let valid = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key).verify(&message, &signature).is_ok();
+            Ok(json!({ "valid": valid }))
+        })(),
         // One provider ("r2", "s3"), or every bucket when none is named.
         "sync.disable" => with_vault(|vault| {
             let provider = request["provider"].as_str();
@@ -869,6 +881,17 @@ mod tests {
 
     fn ok(operation: &str, request: Value) -> Value {
         call(operation, &request).expect("a known op").unwrap_or_else(|error| panic!("{operation}: {error}"))
+    }
+
+    #[test]
+    fn ed25519_signatures_verify_for_the_updater() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let pair = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let signature = pair.sign(b"{\"version\":\"1.2.3\"}");
+        let request = |message: &[u8]| json!({ "publicKey": pair.public_key().as_ref(), "signature": signature.as_ref(), "message": message });
+        assert_eq!(ok("crypto.verifyEd25519", request(b"{\"version\":\"1.2.3\"}"))["valid"], true);
+        assert_eq!(ok("crypto.verifyEd25519", request(b"tampered"))["valid"], false);
+        assert!(call("crypto.verifyEd25519", &json!({ "publicKey": [300] })).unwrap().is_err());
     }
 
     #[test]
