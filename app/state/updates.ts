@@ -1,4 +1,5 @@
-import { canInstallUpdate, checkForUpdate, downloadUpdate, installUpdate, openExternal, type Update } from "@tarve/core";
+import { checkForUpdate, openExternal, type Update } from "@tarve/core";
+import type { canInstallUpdate, downloadUpdate, installUpdate } from "@tarve/core";
 import pkg from "../../package.json";
 import { refresh, toast } from "./store";
 
@@ -47,6 +48,20 @@ async function githubFetch(input: string | URL | Request, init?: RequestInit): P
   return location ? fetch(location, { signal: init?.signal }) : response;
 }
 
+/**
+ * Self-install pieces of the updater. They need file APIs the Android runtime lacks, so only the
+ * desktop entry (app/desktop.tsx, through ./installer) brings them in; the APK build never bundles them.
+ */
+export interface Installer {
+  canInstall: typeof canInstallUpdate;
+  download: typeof downloadUpdate;
+  install: typeof installUpdate;
+}
+let installer: Installer | undefined;
+export function setInstaller(next: Installer): void {
+  installer = next;
+}
+
 type UpdateState = "idle" | "checking" | "current" | "available" | "downloading" | "error";
 
 export const updates = {
@@ -65,8 +80,8 @@ export function updatesConfigured(): boolean {
 
 /** Whether this copy can replace itself (a built executable in a writable folder). Android installs through the system. */
 export function canSelfUpdate(): boolean {
-  if (ANDROID || !updates.update) return false;
-  try { return canInstallUpdate(updates.update); } catch { return false; }
+  if (ANDROID || !installer || !updates.update) return false;
+  try { return installer.canInstall(updates.update); } catch { return false; }
 }
 
 export function releasePage(update = updates.update): string {
@@ -99,14 +114,14 @@ export async function checkUpdates(quiet = false): Promise<void> {
 export async function applyUpdate(): Promise<void> {
   const update = updates.update;
   if (!update || updates.state === "downloading") return;
-  if (!canSelfUpdate()) return openPage(ANDROID ? update.url : releasePage(update));
+  if (!canSelfUpdate() || !installer) return openPage(ANDROID ? update.url : releasePage(update));
   updates.state = "downloading";
   updates.received = 0;
   updates.total = update.size;
   let drawnAt = 0;
   refresh();
   try {
-    const file = await downloadUpdate(update, {
+    const file = await installer.download(update, {
       fetch: githubFetch as typeof fetch,
       onProgress: (received, total) => {
         updates.received = received;
@@ -118,7 +133,7 @@ export async function applyUpdate(): Promise<void> {
         refresh();
       },
     });
-    installUpdate(file);
+    installer.install(file);
   } catch (error) {
     updates.state = "error";
     updates.error = message(error);

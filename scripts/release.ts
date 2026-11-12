@@ -66,7 +66,7 @@ rmSync(out, { recursive: true, force: true });
 
 const artifacts: string[] = [];
 run(["cargo", "build", "--release", "-p", "termio-core"]);
-tarve("build", "app/main.tsx", "--runtime", "txiki", "--version", version, "--outfile", join(build, "Termio.exe"));
+tarve("build", "app/desktop.tsx", "--runtime", "txiki", "--version", version, "--outfile", join(build, "Termio.exe"));
 artifacts.push(`win32-x64=${join(build, "Termio.exe")}`);
 
 if (values.android) {
