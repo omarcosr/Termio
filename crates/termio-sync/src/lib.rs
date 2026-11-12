@@ -1,4 +1,5 @@
-//! Vault sync through an S3-compatible bucket (Cloudflare R2), with no server of our own.
+//! Vault sync through S3-compatible buckets (Cloudflare R2, AWS S3), with no server of our own.
+//! A vault can sync with several buckets: each one holds the same object, a backup of the others.
 //!
 //! The bucket holds a single object, `termio.vault`: the key envelope (the data key wrapped by
 //! the password), a key check, and every record sealed together with the data key. A sync reads
@@ -12,7 +13,7 @@
 pub mod cloudflare;
 mod r2;
 
-pub use r2::{R2Config, R2Store};
+pub use r2::{detect_region, R2Config, R2Store};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -199,6 +200,27 @@ fn sync_with(vault: &mut Vault, store: &dyn Store, rewrite: bool) -> Result<Repo
     Err(SyncError::Contended)
 }
 
+/// Syncs with several buckets, so each one holds the whole vault (a backup of the others). Records
+/// taken from one bucket reach the buckets synced before it on a second pass. A failing bucket does
+/// not stop the others: the result per bucket comes back in order, with the total.
+pub fn sync_all(vault: &mut Vault, stores: &[&dyn Store]) -> (Report, Vec<Result<Report, SyncError>>) {
+    let mut results: Vec<Result<Report, SyncError>> = stores.iter().map(|store| sync(vault, *store)).collect();
+    // Only a record pulled after the first bucket can be missing from an earlier one.
+    if results.iter().skip(1).flatten().any(|report| report.pulled > 0) {
+        for (index, store) in stores.iter().enumerate() {
+            if let (Ok(first), Ok(again)) = (&results[index], sync(vault, *store)) {
+                results[index] = Ok(Report { pulled: first.pulled + again.pulled, pushed: first.pushed + again.pushed });
+            }
+        }
+    }
+    let mut total = Report::default();
+    for report in results.iter().flatten() {
+        total.pulled += report.pulled;
+        total.pushed += report.pushed;
+    }
+    (total, results)
+}
+
 /// An in-memory bucket with S3's conditional-write semantics, for tests and offline use.
 #[derive(Default)]
 pub struct MemoryStore {
@@ -361,6 +383,55 @@ mod tests {
         sync(&mut b, &bucket).unwrap();
         sync(&mut a, &bucket).unwrap();
         assert!(names(&a).is_empty());
+    }
+
+    /// A bucket that cannot be reached.
+    struct Down;
+
+    impl Store for Down {
+        fn get(&self, _: &str) -> Result<Option<(Vec<u8>, String)>, StoreError> {
+            Err(StoreError::Other("offline".into()))
+        }
+        fn put(&self, _: &str, _: &[u8], _: Condition) -> Result<String, StoreError> {
+            Err(StoreError::Other("offline".into()))
+        }
+        fn list_vaults(&self) -> Result<Vec<String>, StoreError> {
+            Err(StoreError::Other("offline".into()))
+        }
+    }
+
+    #[test]
+    fn every_bucket_holds_the_whole_vault_as_a_backup_of_the_others() {
+        let dir = Dir::new("backup");
+        let (r2, s3) = (MemoryStore::default(), MemoryStore::default());
+        let mut a = Vault::create_with(&dir.file("a"), "pw", FAST).unwrap();
+        a.put("host", None, json!({ "name": "prod" })).unwrap();
+        let (total, results) = sync_all(&mut a, &[&r2, &s3]);
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(total.pushed, 2, "the vault went to both buckets");
+
+        // A device that only knows S3 adds a host there; the next sync of a carries it to R2.
+        let mut b = Vault::join(&dir.file("b"), fetch_envelope(&s3).unwrap(), "pw").unwrap();
+        sync(&mut b, &s3).unwrap();
+        b.put("host", None, json!({ "name": "db" })).unwrap();
+        sync(&mut b, &s3).unwrap();
+        sync_all(&mut a, &[&r2, &s3]);
+        let mut c = Vault::join(&dir.file("c"), fetch_envelope(&r2).unwrap(), "pw").unwrap();
+        sync(&mut c, &r2).unwrap();
+        assert_eq!(names(&c), ["db", "prod"], "R2 got what was added through S3");
+    }
+
+    #[test]
+    fn a_bucket_that_fails_does_not_stop_the_others() {
+        let dir = Dir::new("down");
+        let bucket = MemoryStore::default();
+        let mut a = Vault::create_with(&dir.file("a"), "pw", FAST).unwrap();
+        a.put("host", None, json!({ "name": "prod" })).unwrap();
+        let (total, results) = sync_all(&mut a, &[&Down, &bucket]);
+        assert!(matches!(results[0], Err(SyncError::Store(_))));
+        assert!(results[1].is_ok());
+        assert_eq!(total.pushed, 1);
+        assert!(bucket.raw(VAULT).is_some());
     }
 
     /// A store where another device writes the vault between our read and our write, once.
