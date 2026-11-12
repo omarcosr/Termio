@@ -1,6 +1,6 @@
 {
   "name": "termio",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "SSH terminal for slow and distant links",
@@ -43,7 +43,7 @@
   },
   "tarve": {
     "name": "Termio",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "SSH terminal for slow and distant links",
     "publisher": "Termio",
     "copyright": "Copyright (c) 2026 Termio",
