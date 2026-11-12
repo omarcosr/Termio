@@ -20,6 +20,17 @@ jobs:
       - run: bun run check
         env:
           SPIKE_RENDERER: cpu
+      # `bun run build` makes the --runtime txiki executable: it needs tjs.exe (TARVE_TXIKI).
+      - name: Install txiki.js
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest https://github.com/saghul/txiki.js/releases/download/v26.6.0/txiki-windows-x86_64.zip -OutFile "$env:RUNNER_TEMP\txiki.zip"
+          Expand-Archive "$env:RUNNER_TEMP\txiki.zip" -DestinationPath "$env:RUNNER_TEMP\txiki"
+          $tjs = "$env:RUNNER_TEMP\txiki\txiki-windows-x86_64\tjs.exe"
+          & $tjs --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "TARVE_TXIKI=$tjs" >> $env:GITHUB_ENV
       - run: bun run build
       - uses: actions/upload-artifact@v4
         with:
