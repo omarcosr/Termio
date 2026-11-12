@@ -5,8 +5,8 @@
   "type": "module",
   "description": "SSH terminal for slow and distant links",
   "scripts": {
-    "start": "bun app/main.tsx",
-    "dev": "tarve dev app/main.tsx",
+    "start": "bun app/desktop.tsx",
+    "dev": "tarve dev app/desktop.tsx",
     "native": "cargo build --release -p termio-core",
     "native:debug": "cargo build -p termio-core",
     "typecheck": "tsc --noEmit",
@@ -17,7 +17,7 @@
     "check:ui:phone": "bun scripts/ui-phones.ts",
     "check:ctrlc": "bun scripts/ctrlc-check.tsx",
     "android": "cargo ndk -t arm64-v8a build --release -p termio-core && tarve build app/main.tsx --target android-arm64 --outfile dist/Termio.apk",
-    "android:install": "tarve build app/main.tsx --target android-arm64 --outfile dist/Termio.apk && adb install -r dist/Termio.apk && adb shell monkey -p termio.app -c android.intent.category.LAUNCHER 1",
+    "android:install": "bun run android && adb install -r dist/Termio.apk && adb shell monkey -p termio.app -c android.intent.category.LAUNCHER 1",
     "android:dev": "tarve dev app/main.tsx --target android-arm64",
     "check:features": "bun scripts/features-check.tsx",
     "bench": "cargo run --release -p termio-transport --example bench --",
@@ -26,7 +26,7 @@
     "agent": "cargo build --release -p termio-agent",
     "agent:linux": "wsl -d Ubuntu -- bash -lc \"cargo build --release -p termio-agent --target x86_64-unknown-linux-musl && mkdir -p dist/agent && strip -o dist/agent/termio-agent-linux-x64 target/x86_64-unknown-linux-musl/release/termio-agent\"",
     "icon": "powershell -ExecutionPolicy Bypass -File scripts/make-icon.ps1",
-    "build": "cargo build --release -p termio-core && tarve build app/main.tsx --runtime txiki --outfile dist/Termio.exe",
+    "build": "cargo build --release -p termio-core && tarve build app/desktop.tsx --runtime txiki --outfile dist/Termio.exe",
     "package": "tarve package dist/Termio.exe --format zip --version 0.1.0 --out dist/packages",
     "release": "bun scripts/release.ts"
   },
@@ -35,7 +35,7 @@
     "publicKey": "QIRO33rI9MQnETST+fFfutRuU1gmdBk2rgTy68TWCXw="
   },
   "dependencies": {
-    "@tarve/core": "file:../tarve/dist/tarve-core-0.11.1.tgz"
+    "@tarve/core": "^0.12.0"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

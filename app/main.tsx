@@ -31,17 +31,13 @@ import { touch } from "./ui/kit";
 import { applyUpdate, checkUpdates, startUpdateChecks } from "./state/updates";
 
 /**
- * Android's Back arrives as a close request. It goes back a step in the app first; on the first
- * screen it sends the app to the background instead of ending it, so open sessions survive.
+ * Android Back with nothing left to go back from (app.onBack below) arrives as a close request:
+ * the app goes to the background instead of ending, so open sessions survive.
  */
 function onCloseRequest(event: WindowCloseRequestEvent): void {
   if ((process.platform as string) !== "android") return;
   event.preventDefault();
-  if (ui.phase === "ready" && handleBack()) {
-    app.update();
-    return;
-  }
-  try { core().call({ op: "android.background" }); } catch { /* stays open */ }
+  app.moveToBackground();
 }
 
 function App() {
@@ -52,13 +48,18 @@ function App() {
   );
 }
 
-// Errors nothing else caught open a dialog instead of ending the process (an unhandled rejection
-// in Bun exits, and the window went with it).
-process.on("unhandledRejection", reason => reportFault(reason, "rejection"));
-process.on("uncaughtException", error => reportFault(error, "exception"));
+// Errors nothing else caught open a dialog instead of ending the process: Tarve hands onError the
+// unhandled rejections and uncaught exceptions too (source "process").
 const app = createApp(App, { plugins: [termioCore], keyboardEvents: true, pointerEvents: true, onError: event => reportFault(event.error, event.source) });
 await app.ready;
 setRenderer(() => app.update());
+// Android Back: Tarve closes an open dialog, sheet or the palette first; then this steps back
+// through the app. Not on desktop Escape (no `escape: true`): there Escape belongs to the terminal.
+app.onBack(() => {
+  if (ui.phase !== "ready" || !handleBack()) return false;
+  app.update();
+  return true;
+});
 dialogs.open = async () => (await app.openFilesDialog({ title: "Upload files" })) ?? [];
 dialogs.save = async name => (await app.saveFileDialog({ title: "Save as", fileName: name })) ?? undefined;
 dialogs.focus = id => app.focus(id);

@@ -1,5 +1,4 @@
-import { Column, Row, Scroll, Text, TextArea, type VNode } from "@tarve/core";
-import { core } from "../core/plugin";
+import { Column, Row, Scroll, Text, TextArea, type VNode, clipboard } from "@tarve/core";
 import { generateKey, importKey, removeRecord, toast, ui } from "../state/store";
 import { Glyph } from "../ui/icons";
 import { compact, gutter, Action, Field, Hint, IconAction, Label, Segments, mono, relativeTime } from "../ui/kit";
@@ -16,13 +15,7 @@ export function closeNewKey(): boolean {
 const draft = { mode: "generate" as "generate" | "import", open: false, name: "", privateKey: "", passphrase: "" };
 
 function copy(text: string, what: string): void {
-  // The core owns the system clipboard; a session-less copy goes through the same path.
-  try {
-    core().call({ op: "clipboard.set", text });
-    toast(`${what} copied`);
-  } catch {
-    toast("Could not reach the clipboard", "error");
-  }
+  clipboard.writeText(text).then(() => toast(`${what} copied`), () => toast("Could not reach the clipboard", "error"));
 }
 
 function NewKey() {

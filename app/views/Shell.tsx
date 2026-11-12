@@ -1,5 +1,4 @@
-import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem } from "@tarve/core";
-import { core } from "../core/plugin";
+import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem, clipboard } from "@tarve/core";
 import {
   activate,
   closePane,
@@ -500,10 +499,10 @@ function TerminalTab({ tab, visible }: { tab: Tab; visible: boolean }) {
                   125% scale and the compositor resamples every glyph across two pixels (blurry
                   text). 3 px more puts it 4 px in: whole device pixels at 100/125/150/175/200%. The
                   title bar is 43 + 1 for the same reason. */}
-              {/* Not focusable and square: a Pressable takes the keyboard focus on click and Tarve then
-                  drew its rounded focus ring around the whole terminal. Splits mark the focused pane
-                  with the border above instead. */}
-              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch() && tapOpensKeyboard(session)) openKeyboard(session); }} onPinch={pinchFont} style={{ position: "relative", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0, outlineWidth: 0, focus: { outlineWidth: 0 }, focusVisible: { outlineWidth: 0 } }}>
+              {/* Not focusable: the keys belong to the terminal, and a focused Pressable would take
+                  Enter and Space as clicks (and show its ring for them). Splits mark the focused
+                  pane with the border above instead. */}
+              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch() && tapOpensKeyboard(session)) openKeyboard(session); }} onPinch={pinchFont} style={{ position: "relative", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0 }}>
                 <TerminalPane session={session} />
                 <SessionOverlay info={info} />
                 {touch() ? <SelectionOverlay session={session} /> : null}
@@ -571,19 +570,6 @@ function Palette() {
   );
 }
 
-function Toast() {
-  if (!ui.toast) return null;
-  const error = ui.toast.tone === "error";
-  return (
-    <Row style={{ position: "absolute", bottom: compact() ? 72 : 44, left: 0, right: 0, justify: "center", pointerEvents: "none" }}>
-      <Row gap={10} align="center" style={{ maxWidth: dialogWidth(560), padding: { top: 10, bottom: 10, left: 14, right: 16 }, background: color.raised, radius: radius.control, borderColor: error ? color.danger : color.lineStrong, borderWidth: 1, boxShadow: { y: 10, blur: 28, color: "#00000080" } }}>
-        <Glyph name={error ? "alert" : "check"} size={15} color={error ? color.danger : color.ok} />
-        <Text size={13} color={color.text} style={{ shrink: 1, minWidth: 0 }}>{ui.toast.text}</Text>
-      </Row>
-    </Row>
-  );
-}
-
 /**
  * The window's whole content. The title bar stays mounted through lock and unlock: Tarve
  * cannot add or remove it once the window exists.
@@ -630,7 +616,11 @@ export function Root() {
       <TitleBar height={43} showMinimize={!compact()} showMaximize={!compact()} style={{ background: color.panel, borderColor: color.line, borderWidth: { bottom: 1 } }} buttonStyle={{ foreground: color.muted }} actions={ready ? <TitleActions /> : null}>
         {ready ? <Tabs /> : <Row flex={1} dragRegion style={{ height: 30 }} />}
       </TitleBar>
-      {ready ? <Shell /> : <Unlock />}
+      {ready ? (
+        <Column flex={1} motionFrom={{ opacity: 0 }} style={{ minHeight: 0, opacity: 1, transition: { opacity: { duration: 260, easing: "easeOut" } } }}>
+          <Shell />
+        </Column>
+      ) : <Unlock />}
       <FaultDialog />
     </Column>
   );
@@ -648,7 +638,7 @@ function FaultDialog() {
       footer={
         <Row gap={8} justify="end">
           <Action icon="copy" label="Copy details" onClick={() => {
-            try { core().call({ op: "clipboard.set", text: `${fault?.message}\n\n${fault?.detail}` }); } catch { /* nothing to copy into */ }
+            void clipboard.writeText(`${fault?.message}\n\n${fault?.detail}`).catch(() => { /* nothing to copy into */ });
           }} />
           <Action tone="primary" label="Close" onClick={dismissFault} />
         </Row>
@@ -690,7 +680,7 @@ function Shell() {
       <TabSwitcher />
       <HostKeyPrompt />
       <Palette />
-      <Toast />
+      
     </Column>
   );
 }

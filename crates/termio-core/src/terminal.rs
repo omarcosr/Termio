@@ -1,7 +1,7 @@
 //! A terminal session: the emulator fed by a transport, painted cell by cell, with keyboard,
 //! paste and pointer input encoded for the program on the other end.
 
-use crate::clipboard::{Clipboard, SystemClipboard};
+use crate::clipboard::{Clipboard, HostClipboard};
 use crate::events;
 use crate::session::{KeyEvent, MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, PointerEvent, PointerPhase, Select, SelectionView, Session};
 use crate::surface::{Invalidator, Scene};
@@ -158,7 +158,7 @@ struct Hit {
 
 impl TerminalSession {
     pub fn new(id: u32, invalidator: Invalidator) -> Arc<Self> {
-        Self::with_clipboard(id, invalidator, Box::new(SystemClipboard))
+        Self::with_clipboard(id, invalidator, Box::new(HostClipboard { session: id }))
     }
 
     pub fn with_clipboard(id: u32, invalidator: Invalidator, clipboard: Box<dyn Clipboard>) -> Arc<Self> {
@@ -1171,5 +1171,45 @@ mod tests {
         if !cfg!(debug_assertions) {
             assert!(rate >= 25.0, "emulator throughput fell to {rate:.1} MB/s");
         }
+    }
+
+    /// Render-thread cost per frame on a phone-sized surface while output scrolls: a full paint,
+    /// then one line fed and painted per frame (what `tail -f` or a build log costs). Prints only;
+    /// run it on a device to split the terminal's share of a slow frame from the UI's.
+    #[test]
+    fn paint_cost() {
+        let (width, height, scale) = (1080u32, 2100u32, 2.625f32);
+        let fixture = Fixture::detached();
+        fixture.session.attach(Box::new(fixture.program.clone()));
+        let mut fonts = Fonts::new(None);
+        Scene::layout(&*fixture.session, width, height, scale, &mut fonts);
+        let mut canvas = Canvas::new(width, height);
+        let line = "\x1b[32mok\x1b[0m the quick brown fox \x1b[1mjumps\x1b[0m over the lazy dog 0123456789\r\n";
+        fixture.feed(line.repeat(200).as_bytes());
+        let started = Instant::now();
+        Scene::paint(&*fixture.session, &mut canvas, &mut fonts, true);
+        let first = started.elapsed();
+        let rounds = if cfg!(debug_assertions) { 20 } else { 300 };
+        let started = Instant::now();
+        for _ in 0..rounds {
+            Scene::paint(&*fixture.session, &mut canvas, &mut fonts, true);
+        }
+        let full = started.elapsed() / rounds;
+        let mut worst = std::time::Duration::ZERO;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            fixture.feed(line.as_bytes());
+            let frame = Instant::now();
+            Scene::paint(&*fixture.session, &mut canvas, &mut fonts, false);
+            worst = worst.max(frame.elapsed());
+        }
+        let scroll = started.elapsed() / rounds;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            fixture.feed(b"x");
+            Scene::paint(&*fixture.session, &mut canvas, &mut fonts, false);
+        }
+        let typed = started.elapsed() / rounds;
+        println!("{width}x{height}@{scale}: first {first:?}, full {full:?}, scroll {scroll:?} (worst {worst:?}), keystroke {typed:?}");
     }
 }

@@ -50,61 +50,6 @@ fn default_path() -> PathBuf {
     base.join("Termio").join("vault.termio")
 }
 
-/// The sealed vault password beside the vault: only this device's Keystore can open it.
-fn unlock_file() -> PathBuf {
-    path().with_extension("unlock")
-}
-
-const UNLOCK_KEY: &str = "termio.unlock";
-
-#[cfg(target_os = "android")]
-fn save_unlock(password: &str) -> Result<Value, String> {
-    let sealed = crate::android::seal(UNLOCK_KEY, password.as_bytes())?;
-    std::fs::write(unlock_file(), sealed).map_err(|error| error.to_string())?;
-    Ok(json!({}))
-}
-
-#[cfg(target_os = "android")]
-fn load_unlock() -> Result<Value, String> {
-    let sealed = std::fs::read(unlock_file()).map_err(|error| error.to_string())?;
-    let plain = crate::android::open(UNLOCK_KEY, &sealed)?;
-    Ok(json!({ "password": String::from_utf8(plain).map_err(|error| error.to_string())? }))
-}
-
-#[cfg(target_os = "android")]
-fn android_keep_alive(request: &Value) -> Result<Value, String> {
-    let active = request["active"].as_bool().unwrap_or(false);
-    crate::android::keep_alive(active, request["title"].as_str().unwrap_or(""), request["text"].as_str().unwrap_or(""))?;
-    Ok(json!({}))
-}
-
-#[cfg(target_os = "android")]
-fn android_background() -> Result<Value, String> {
-    crate::android::to_background()?;
-    Ok(json!({}))
-}
-
-#[cfg(not(target_os = "android"))]
-fn save_unlock(_password: &str) -> Result<Value, String> {
-    let _ = UNLOCK_KEY;
-    Err("fingerprint unlock is only on Android".into())
-}
-
-#[cfg(not(target_os = "android"))]
-fn load_unlock() -> Result<Value, String> {
-    Err("fingerprint unlock is only on Android".into())
-}
-
-#[cfg(not(target_os = "android"))]
-fn android_keep_alive(_request: &Value) -> Result<Value, String> {
-    Ok(json!({}))
-}
-
-#[cfg(not(target_os = "android"))]
-fn android_background() -> Result<Value, String> {
-    Err("only on Android".into())
-}
-
 fn path() -> PathBuf {
     PATH.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_else(default_path)
 }
@@ -149,52 +94,120 @@ fn put(vault: &mut Vault, kind: &str, id: Option<&str>, data: Value) -> Result<R
     vault.put(kind, id, Value::Object(data)).map_err(|error| error.to_string())
 }
 
-fn sync_config(vault: &Vault) -> Option<R2Config> {
-    let settings = &vault.get("sync")?.data;
+/// The buckets a vault syncs with, each in a settings record of its own: Cloudflare R2 in `sync`
+/// (its id from before there was a choice) and AWS S3 in `sync.s3`. The records sync like any
+/// other, so a bucket added on one device is used by all of them, and each bucket keeps the same
+/// vault: a backup of the other.
+const TARGETS: [(&str, &str); 2] = [("r2", "sync"), ("s3", "sync.s3")];
+
+fn target_id(config: &R2Config) -> &'static str {
+    if config.is_aws() { "sync.s3" } else { "sync" }
+}
+
+fn sync_config(vault: &Vault, id: &str) -> Option<R2Config> {
+    let settings = &vault.get(id)?.data;
     let field = |name: &str| settings[name].as_str().map(str::to_owned).filter(|value| !value.is_empty());
+    let region = field("region");
+    let endpoint = field("endpoint");
+    let account = field("account").unwrap_or_default();
+    // R2 finds the bucket through the account; S3 through the region.
+    if account.is_empty() && region.is_none() && endpoint.is_none() {
+        return None;
+    }
     Some(R2Config {
-        account: field("account")?,
+        account,
         bucket: field("bucket")?,
         access_key: field("accessKey")?,
         secret_key: field("secretKey")?,
-        endpoint: field("endpoint"),
+        endpoint,
+        region,
         name: field("name").unwrap_or_else(|| "termio".into()),
     })
 }
 
+fn sync_configs(vault: &Vault) -> Vec<R2Config> {
+    TARGETS.iter().filter_map(|(_, id)| sync_config(vault, id)).collect()
+}
+
+/// A bucket from the UI: `provider` "s3" (AWS, region detected when not given) or "r2" (the default).
+/// A blank secret keeps the one already saved for that provider.
 fn r2_from(request: &Value) -> Result<R2Config, String> {
+    let aws = request["provider"].as_str() == Some("s3");
+    let bucket = text(request, "bucket")?.trim().to_owned();
+    let region = if aws {
+        Some(match request["region"].as_str().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(region) => region.to_owned(),
+            None => termio_sync::detect_region(&bucket)?,
+        })
+    } else {
+        None
+    };
+    let secret_key = match request["secretKey"].as_str().filter(|value| !value.is_empty()) {
+        Some(secret) => secret.to_owned(),
+        None => vault()
+            .as_ref()
+            .and_then(|vault| sync_config(vault, if aws { "sync.s3" } else { "sync" }))
+            .map(|saved| saved.secret_key)
+            .ok_or("missing secretKey")?,
+    };
     Ok(R2Config {
-        account: text(request, "account")?.to_owned(),
-        bucket: text(request, "bucket")?.to_owned(),
+        account: if aws { String::new() } else { text(request, "account")?.to_owned() },
+        bucket,
         access_key: text(request, "accessKey")?.to_owned(),
-        secret_key: text(request, "secretKey")?.to_owned(),
+        secret_key,
         endpoint: request["endpoint"].as_str().filter(|value| !value.is_empty()).map(str::to_owned),
+        region,
         name: request["name"].as_str().map(str::trim).filter(|value| !value.is_empty()).unwrap_or("termio").to_owned(),
     })
 }
 
+/// Syncs the vault with every bucket (termio_sync::sync_all); errors come back named by provider.
+fn sync_all(configs: &[R2Config]) -> (termio_sync::Report, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut stores = Vec::new();
+    for config in configs {
+        match R2Store::new(config) {
+            Ok(store) => stores.push((config.provider(), store)),
+            Err(error) => errors.push(format!("{}: {error}", config.provider())),
+        }
+    }
+    let refs: Vec<&dyn termio_sync::Store> = stores.iter().map(|(_, store)| store as &dyn termio_sync::Store).collect();
+    // The vault stays locked for the whole sync: a few round trips on a slow link, during which
+    // edits wait rather than race the merge.
+    let synced = with_vault(|vault| Ok(termio_sync::sync_all(vault, &refs)));
+    match synced {
+        Ok((total, results)) => {
+            for ((provider, _), result) in stores.iter().zip(results) {
+                if let Err(error) = result {
+                    errors.push(format!("{provider}: {error}"));
+                }
+            }
+            (total, errors)
+        }
+        Err(error) => {
+            errors.push(error);
+            (termio_sync::Report::default(), errors)
+        }
+    }
+}
+
 /// Runs a sync on a thread of its own; the result arrives as a `sync` event.
 fn sync_in_background() {
-    let Some(config) = vault().as_ref().and_then(sync_config) else { return };
-    if SYNCING.swap(true, Ordering::AcqRel) {
+    let configs = vault().as_ref().map(sync_configs).unwrap_or_default();
+    if configs.is_empty() || SYNCING.swap(true, Ordering::AcqRel) {
         return;
     }
     events::emit(json!({ "type": "sync", "state": "running" }));
     std::thread::spawn(move || {
-        let result = R2Store::new(&config).and_then(|store| {
-            // The vault stays locked for the whole sync: a few round trips on a slow link,
-            // during which edits wait rather than race the merge.
-            with_vault(|vault| termio_sync::sync(vault, &store).map_err(|error| error.to_string()))
-        });
+        let (report, errors) = sync_all(&configs);
         SYNCING.store(false, Ordering::Release);
-        match result {
-            Ok(report) => {
-                events::emit(json!({ "type": "sync", "state": "done", "pulled": report.pulled, "pushed": report.pushed }));
-                if report.pulled > 0 {
-                    events::emit(json!({ "type": "records.changed" }));
-                }
-            }
-            Err(error) => events::emit(json!({ "type": "sync", "state": "error", "message": error })),
+        if report.pulled > 0 {
+            events::emit(json!({ "type": "records.changed" }));
+        }
+        if errors.is_empty() {
+            events::emit(json!({ "type": "sync", "state": "done", "pulled": report.pulled, "pushed": report.pushed }));
+        } else {
+            events::emit(json!({ "type": "sync", "state": "error", "message": errors.join("; ") }));
         }
     });
 }
@@ -297,7 +310,7 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
     Some(match operation {
         "vault.status" => {
             let unlocked = vault().is_some();
-            let configured = vault().as_ref().is_some_and(|vault| sync_config(vault).is_some());
+            let configured = vault().as_ref().is_some_and(|vault| !sync_configs(vault).is_empty());
             Ok(json!({ "exists": Vault::exists(&path()), "unlocked": unlocked, "path": path(), "syncConfigured": configured }))
         }
         "vault.create" => text(request, "password").and_then(|password| {
@@ -324,11 +337,11 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             }
             let config = with_vault(|vault| {
                 vault.change_password(password).map_err(|error| error.to_string())?;
-                Ok(sync_config(vault))
+                Ok(sync_configs(vault))
             })?;
-            if let Some(config) = config {
+            for config in config {
                 let store = R2Store::new(&config)?;
-                with_vault(|vault| termio_sync::publish_envelope(vault, &store).map_err(|error| error.to_string()))?;
+                with_vault(|vault| termio_sync::publish_envelope(vault, &store).map_err(|error| format!("{}: {error}", config.provider())))?;
             }
             Ok(json!({}))
         }),
@@ -340,8 +353,10 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             let envelope = termio_sync::fetch_envelope(&store).map_err(|error| error.to_string())?;
             let mut joined = Vault::join(&path(), envelope, password).map_err(|error| error.to_string())?;
             let report = termio_sync::sync(&mut joined, &store).map_err(|error| error.to_string())?;
-            put(&mut joined, "settings", Some("sync"), sync_settings(&config))?;
+            put(&mut joined, "settings", Some(target_id(&config)), sync_settings(&config))?;
             *vault() = Some(joined);
+            // The vault may name other buckets (a backup): bring them up to date too.
+            sync_in_background();
             Ok(json!({ "pulled": report.pulled }))
         })(),
         "records.list" => with_vault(|vault| {
@@ -350,7 +365,7 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
         }),
         "records.put" => with_vault(|vault| {
             let kind = text(request, "kind")?;
-            if kind == "settings" && request["id"].as_str() == Some("sync") {
+            if kind == "settings" && TARGETS.iter().any(|(_, id)| request["id"].as_str() == Some(id)) {
                 return Err("use sync.configure".into());
             }
             let record = put(vault, kind, request["id"].as_str(), request["data"].clone())?;
@@ -387,9 +402,11 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             let store = R2Store::new(&config)?;
             let report = with_vault(|vault| {
                 let report = termio_sync::sync(vault, &store).map_err(|error| error.to_string())?;
-                put(vault, "settings", Some("sync"), sync_settings(&config))?;
+                put(vault, "settings", Some(target_id(&config)), sync_settings(&config))?;
                 Ok(report)
             })?;
+            // The new bucket's settings, and what it held, go to the other buckets.
+            sync_in_background();
             Ok(json!({ "pulled": report.pulled, "pushed": report.pushed }))
         })(),
         "cloudflare.connect" => text(request, "token").and_then(|token| {
@@ -427,22 +444,6 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             registry().relayout_all();
             Ok(json!({}))
         }
-        "clipboard.set" => text(request, "text").and_then(|value| {
-            use crate::clipboard::Clipboard;
-            crate::clipboard::SystemClipboard.set(value).map(|_| json!({}))
-        }),
-        // Android only: the notification that keeps sessions running in the background, and
-        // Back on the first screen sending the app away instead of ending it.
-        "android.keepAlive" => android_keep_alive(request),
-        "android.background" => android_background(),
-        // The vault password sealed by the Android Keystore, for unlocking with a fingerprint.
-        "unlock.saved" => Ok(json!({ "saved": unlock_file().is_file() })),
-        "unlock.save" => text(request, "password").and_then(save_unlock),
-        "unlock.load" => load_unlock(),
-        "unlock.forget" => {
-            let _ = std::fs::remove_file(unlock_file());
-            Ok(json!({}))
-        }
         "sync.vaults" => (|| {
             // The vaults in a bucket, by name, for the picker.
             use termio_sync::Store;
@@ -460,12 +461,28 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
             }
         })(),
         "cloudflare.tokenUrl" => Ok(json!({ "url": termio_sync::cloudflare::TOKEN_URL })),
-        "sync.disable" => with_vault(|vault| vault.remove("sync").map_err(|error| error.to_string()).map(|_| json!({}))),
+        // One provider ("r2", "s3"), or every bucket when none is named.
+        "sync.disable" => with_vault(|vault| {
+            let provider = request["provider"].as_str();
+            for (name, id) in TARGETS {
+                if provider.is_none_or(|provider| provider == name) && vault.get(id).is_some() {
+                    vault.remove(id).map_err(|error| error.to_string())?;
+                }
+            }
+            Ok(json!({}))
+        })
+        .inspect(|_| sync_in_background()),
         "sync.run" => {
             sync_in_background();
             Ok(json!({}))
         }
-        "sync.settings" => with_vault(|vault| Ok(vault.get("sync").map(public).unwrap_or(Value::Null))),
+        "sync.settings" => with_vault(|vault| {
+            let mut targets = Map::new();
+            for (name, id) in TARGETS {
+                targets.insert(name.to_owned(), vault.get(id).filter(|_| sync_config(vault, id).is_some()).map(public).unwrap_or(Value::Null));
+            }
+            Ok(Value::Object(targets))
+        }),
         "hostkey.answer" => (|| {
             let request_id = request["request"].as_u64().ok_or("missing request")?;
             let trust = request["trust"].as_bool().unwrap_or(false);
@@ -836,7 +853,7 @@ fn sftp_call(operation: &str, request: &Value) -> Result<Value, String> {
 }
 
 fn sync_settings(config: &R2Config) -> Value {
-    json!({ "account": config.account, "bucket": config.bucket, "accessKey": config.access_key, "secretKey": config.secret_key, "endpoint": config.endpoint, "name": config.name })
+    json!({ "provider": if config.is_aws() { "s3" } else { "r2" }, "account": config.account, "bucket": config.bucket, "accessKey": config.access_key, "secretKey": config.secret_key, "endpoint": config.endpoint, "region": config.region, "name": config.name })
 }
 
 /// Points the vault at another file (tests).
@@ -881,6 +898,22 @@ mod tests {
         assert_eq!(key["data"]["hasPrivate"], true);
         assert!(key["data"].get("private").is_none());
         assert_eq!(ok("records.list", json!({ "kind": "key" }))["records"].as_array().unwrap().len(), 1);
+
+        // An AWS S3 bucket beside R2: its own settings record, no account, secret kept in the core.
+        let s3 = R2Config { account: String::new(), bucket: "backup".into(), access_key: "AKIA".into(), secret_key: "s3-secret".into(), endpoint: None, region: Some("sa-east-1".into()), name: "termio".into() };
+        with_vault(|vault| put(vault, "settings", Some(target_id(&s3)), sync_settings(&s3)).map(|_| ())).unwrap();
+        let configs = with_vault(|vault| Ok(sync_configs(vault))).unwrap();
+        assert_eq!(configs, std::slice::from_ref(&s3), "R2 is not set up, S3 is");
+        let targets = ok("sync.settings", json!({}));
+        assert!(targets["r2"].is_null());
+        assert_eq!(targets["s3"]["data"]["region"], "sa-east-1");
+        assert_eq!(targets["s3"]["data"]["hasSecretKey"], true);
+        assert!(targets["s3"]["data"].get("secretKey").is_none());
+        assert!(call("records.put", &json!({ "kind": "settings", "id": "sync.s3", "data": {} })).unwrap().is_err(), "sync settings go through sync.configure");
+        ok("sync.disable", json!({ "provider": "r2" }));
+        assert_eq!(with_vault(|vault| Ok(sync_configs(vault).len())).unwrap(), 1, "turning off R2 leaves S3");
+        ok("sync.disable", json!({ "provider": "s3" }));
+        assert!(ok("sync.settings", json!({}))["s3"].is_null());
 
         ok("vault.lock", json!({}));
         assert!(call("records.list", &json!({ "kind": "host" })).unwrap().is_err());

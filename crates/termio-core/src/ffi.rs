@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use termio_render::{SurfaceKind, open_presenter};
 use termio_transport::local::{LocalOptions, LocalPty};
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 const UNKNOWN_SESSION: i32 = -1;
 const INVALID: i32 = -2;
@@ -108,33 +108,16 @@ pub extern "C" fn termio_abi_version() -> u32 {
     ABI_VERSION
 }
 
-/// Starts the core. `wake` is called from a core thread whenever events are waiting; the UI
-/// then calls [`termio_drain_events`] on its own thread.
+/// Starts the core. `emit` is Tarve's `tarve_plugin_emit` (`ctx.emitAddress()`): every event
+/// goes through it, from whichever thread raised it.
 #[unsafe(no_mangle)]
-pub extern "C" fn termio_init(wake: Option<events::WakeFn>) -> i32 {
-    guard(|| match wake {
-        Some(wake) => {
-            events::init(wake);
+pub extern "C" fn termio_init(emit: Option<events::EmitFn>) -> i32 {
+    guard(|| match emit {
+        Some(emit) => {
+            events::init(emit);
             0
         }
-        // No wake: the UI polls the queue (runtimes without thread-safe callbacks).
-        None => 0,
-    })
-}
-
-/// Copies queued events into `buffer` as JSON lines. Returns the bytes written, 0 when there
-/// are none, or minus the size the next event needs.
-///
-/// # Safety
-/// `buffer` points to `capacity` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn termio_drain_events(buffer: *mut u8, capacity: u32) -> i32 {
-    guard(|| {
-        if buffer.is_null() {
-            return INVALID;
-        }
-        // SAFETY: the caller's contract.
-        events::drain(unsafe { std::slice::from_raw_parts_mut(buffer, capacity as usize) })
+        None => INVALID,
     })
 }
 

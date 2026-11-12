@@ -55,7 +55,6 @@ function goTo(files: FilesInfo, typed: string): void {
 function editPath(files: FilesInfo): void {
   draft(files).path = files.path;
   refresh();
-  setTimeout(() => dialogs.focus(pathFieldId(files)), 0);
 }
 
 export const editPathForTest = editPath;
@@ -76,6 +75,7 @@ function PathBar({ files }: { files: FilesInfo }) {
       <Row flex={1} style={{ minWidth: 0 }}>
         <TextField
           id={pathFieldId(files)}
+          autoFocus
           value={state.path}
           placeholder="/path/to/folder"
           onChange={value => { state.path = value; }}

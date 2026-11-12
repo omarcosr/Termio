@@ -1,4 +1,4 @@
-import { Input, Pressable, Row, Scroll, Surface, Text, type SurfaceEvent } from "@tarve/core";
+import { Input, Pressable, Row, Scroll, Surface, Text, type SurfaceEvent, clipboard } from "@tarve/core";
 import { dispatchCoreEvent } from "../core/events";
 import { SURFACE_KIND, core, type KeyInput, type Modifiers, type PointerPhase } from "../core/plugin";
 import { dialogs, previewAppearance, refresh, saveAppearance, toast, ui } from "../state/store";
@@ -372,12 +372,7 @@ function Handle({ session, which, at }: { session: number; which: "start" | "end
 function copySelection(session: number): void {
   const shown = selections.get(session);
   if (!shown) return;
-  try {
-    core().call({ op: "clipboard.set", text: shown.text });
-    toast("Copied");
-  } catch {
-    toast("Could not reach the clipboard", "error");
-  }
+  clipboard.writeText(shown.text).then(() => toast("Copied"), () => toast("Could not reach the clipboard", "error"));
   clearSelection(session);
 }
 

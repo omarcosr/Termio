@@ -4,7 +4,7 @@
 import { onCoreEvent, type CoreEvent } from "../core/events";
 import { core } from "../core/plugin";
 import { setPalette } from "../ui/tokens";
-import { openExternal } from "@tarve/core";
+import { keepAlive, openExternal, secureStore, toast as showToast, type KeepAlive, clipboard, store } from "@tarve/core";
 
 export interface VaultRecord<T = Record<string, unknown>> {
   id: string;
@@ -132,15 +132,26 @@ export interface HostKeyPrompt {
 export type View = "hosts" | "snippets" | "keys" | "known" | "sync" | "settings" | "forwards";
 export type Phase = "locked" | "create" | "join" | "ready";
 
+export type SyncProvider = "r2" | "s3";
+
 export interface SyncSettings {
+  provider?: SyncProvider;
   account: string;
   bucket: string;
   accessKey: string;
   endpoint?: string;
+  /** AWS S3: the bucket's region. */
+  region?: string;
+  name?: string;
   hasSecretKey?: boolean;
 }
 
-export const ui = {
+/**
+ * Everything the views draw from. A Tarve store: a change through it schedules one render, so a
+ * view that only mutates `ui` needs no refresh(). Keep and mutate what `ui` hands back (a pushed
+ * object is reached again through `ui`), and compare identity with toRaw.
+ */
+export const ui = store({
   phase: "locked" as Phase,
   vaultPath: "",
   busy: false,
@@ -160,7 +171,8 @@ export const ui = {
   editingSnippet: undefined as { id?: string; data: SnippetData } | undefined,
   prompts: [] as HostKeyPrompt[],
   sync: { configured: false, state: "idle" as "idle" | "running" | "done" | "error", message: undefined as string | undefined, at: 0 },
-  syncSettings: undefined as SyncSettings | undefined,
+  /** The buckets the vault syncs with, by provider: each holds the whole vault, a backup of the other. */
+  syncTargets: {} as Partial<Record<SyncProvider, SyncSettings>>,
   settingsOpen: false,
   agentInstall: {} as Record<string, AgentInstall>,
   appearance: { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" } as Appearance,
@@ -173,10 +185,9 @@ export const ui = {
   /** The terminal search bar, over the pane of `session`. */
   termSearch: undefined as { session: number; query: string; count: number } | undefined,
   paletteQuery: "",
-  toast: undefined as { text: string; tone: "ok" | "error" } | undefined,
   /** Android: the vault password is sealed here and a fingerprint unlocks it. */
   fingerprint: false,
-};
+});
 
 /** Native file pickers, provided by the app handle once the window is up. */
 export const dialogs = {
@@ -202,22 +213,35 @@ const ANDROID = (process.platform as string) === "android";
  * Android freezes an app in the background, and its sessions drop. While any is open a
  * foreground service with a notification ("2 sessions open") keeps the process running.
  */
-let keptAlive = "";
+let keptText = "";
+let keptAlive: KeepAlive | undefined;
 function syncKeepAlive(): void {
   if (!ANDROID) return;
   const terminals = Object.values(ui.sessions).filter(info => info.status !== "closed").length;
   const files = ui.tabs.filter(tab => tab.kind === "files").length;
   const open = terminals + files;
   const text = open === 0 ? "" : [terminals ? (terminals === 1 ? "1 session" : `${terminals} sessions`) : "", files ? (files === 1 ? "1 file browser" : `${files} file browsers`) : ""].filter(Boolean).join(", ") + " open";
-  if (text === keptAlive) return;
-  keptAlive = text;
-  try { core().call({ op: "android.keepAlive", active: open > 0, title: "Termio is connected", text }); } catch { /* best effort */ }
+  if (text === keptText) return;
+  keptText = text;
+  const report = (result: { error?: string }) => { if (result.error) console.warn("[termio] keepAlive", result.error); };
+  if (!text) {
+    void keptAlive?.release();
+    keptAlive = undefined;
+  } else if (keptAlive) {
+    void keptAlive.update({ title: "Termio is connected", text }).then(report, () => {});
+  } else {
+    keptAlive = keepAlive({ title: "Termio is connected", text });
+    void keptAlive.result.then(report, () => {});
+  }
 }
 
 // --- Fingerprint unlock (Android) ------------------------------------------------------------
 
 /** The password the vault was last opened with, while it is open: enabling fingerprint unlock seals it. */
 let openedWith: string | undefined;
+
+/** Where the vault password is sealed for fingerprint unlock (the Android Keystore, through Tarve). */
+const UNLOCK_ALIAS = "termio.unlock";
 
 /** Fingerprint (or device PIN) checks, provided by the app handle once the window is up. */
 export const biometrics = {
@@ -226,7 +250,7 @@ export const biometrics = {
 
 function unlockSaved(): boolean {
   if (!ANDROID) return false;
-  try { return core().call<{ saved: boolean }>({ op: "unlock.saved" }).saved; } catch { return false; }
+  try { return secureStore.has(UNLOCK_ALIAS); } catch { return false; }
 }
 
 /** The vault password is sealed on this device and a fingerprint opens it. */
@@ -240,12 +264,15 @@ export async function unlockWithFingerprint(): Promise<void> {
     if (check.error) { ui.error = check.error; render(); }
     return;
   }
-  const password = attempt(() => core().call<{ password: string }>({ op: "unlock.load" }))?.password;
-  if (password === undefined) return render();
-  unlockVault(password);
+  const sealed = await secureStore.open(UNLOCK_ALIAS).catch((error: unknown) => ({ supported: true, error: message(error), data: undefined }));
+  if (!sealed.data) {
+    if (sealed.error) { ui.error = sealed.error; }
+    return render();
+  }
+  unlockVault(new TextDecoder().decode(sealed.data));
   if (ui.phase !== "ready") {
     // The password changed elsewhere (a synced vault): the sealed one is useless now.
-    try { core().call({ op: "unlock.forget" }); } catch { /* gone */ }
+    await secureStore.delete(UNLOCK_ALIAS).catch(() => undefined);
     ui.fingerprint = false;
     ui.error = "The saved password no longer opens the vault: type it once to unlock.";
     render();
@@ -254,14 +281,15 @@ export async function unlockWithFingerprint(): Promise<void> {
 
 export async function setFingerprint(on: boolean): Promise<void> {
   if (!on) {
-    try { core().call({ op: "unlock.forget" }); } catch { /* gone */ }
+    await secureStore.delete(UNLOCK_ALIAS).catch(() => undefined);
     ui.fingerprint = false;
     return render();
   }
   if (!openedWith) return toast("Lock and unlock the vault with its password once, then turn this on", "error");
   const check = await biometrics.authenticate("Turn on fingerprint unlock");
   if (!check.success) return toast(check.supported ? check.error ?? "Not confirmed" : "This device has no fingerprint or screen lock", "error");
-  if (attempt(() => core().call({ op: "unlock.save", password: openedWith })) === undefined) return toast(ui.error ?? "Could not save", "error");
+  const saved = await secureStore.seal(UNLOCK_ALIAS, openedWith).catch((error: unknown) => ({ supported: true, error: message(error) }));
+  if (!saved.supported || saved.error) return toast(saved.error ?? "Could not save", "error");
   ui.fingerprint = true;
   toast("Fingerprint unlock is on");
 }
@@ -269,12 +297,8 @@ export function refresh(): void {
   render();
 }
 
-let toastTimer: ReturnType<typeof setTimeout> | undefined;
 export function toast(text: string, tone: "ok" | "error" = "ok"): void {
-  ui.toast = { text, tone };
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { ui.toast = undefined; render(); }, 3200);
-  render();
+  showToast(text, { tone });
 }
 
 const sources: Record<string, string> = {
@@ -288,6 +312,7 @@ const sources: Record<string, string> = {
   plugin: "in the Termio core",
   rejection: "in a background task",
   exception: "in a background task",
+  process: "in a background task",
 };
 
 /**
@@ -403,8 +428,12 @@ export function reload(): void {
   ui.keys = list<KeyData>("key");
   ui.known = list<KnownHostData>("known_host");
   ui.snippets = list<SnippetData>("snippet");
-  const settings = core().call<VaultRecord<SyncSettings> | null>({ op: "sync.settings" });
-  ui.syncSettings = settings?.data ?? undefined;
+  const targets = core().call<Record<SyncProvider, VaultRecord<SyncSettings> | null>>({ op: "sync.settings" });
+  ui.syncTargets = {};
+  for (const provider of ["r2", "s3"] as const) {
+    const data = targets[provider]?.data;
+    if (data) ui.syncTargets[provider] = data;
+  }
   render();
 }
 
@@ -962,16 +991,23 @@ export function removeRecord(id: string): void {
 // --- Sync ----------------------------------------------------------------------------------
 
 export interface SyncForm {
-  account: string;
+  /** "r2" (Cloudflare, the default) or "s3" (AWS). */
+  provider?: SyncProvider;
+  /** R2 only. */
+  account?: string;
   bucket: string;
   accessKey: string;
+  /** Blank keeps the saved one. */
   secretKey: string;
   endpoint?: string;
+  /** S3 only: detected from the bucket when blank. */
+  region?: string;
   /** The vault's name in the bucket (`<name>.vault`). */
   name?: string;
 }
 
-export function configureSync(form: SyncForm): void {
+/** Connects a bucket and syncs with it; false when that failed (reason in ui.error). */
+export function configureSync(form: SyncForm): boolean {
   ui.busy = true;
   render();
   const result = attempt(() => core().call<{ pulled: number; pushed: number }>({ op: "sync.configure", ...form }));
@@ -979,18 +1015,25 @@ export function configureSync(form: SyncForm): void {
   if (result) {
     ui.sync = { configured: true, state: "done", message: undefined, at: Date.now() };
     reload();
-    toast(`Sync is on: ${result.pushed} sent, ${result.pulled} received`);
+    toast(`${providerName(form.provider)} is on: ${result.pushed} sent, ${result.pulled} received`);
   }
+  return Boolean(result);
 }
 
 export function syncNow(): void {
   attempt(() => core().call({ op: "sync.run" }));
 }
 
-export function disableSync(): void {
-  if (attempt(() => core().call({ op: "sync.disable" })) !== undefined) {
-    ui.sync = { configured: false, state: "idle", message: undefined, at: 0 };
+export function providerName(provider: SyncProvider = "r2"): string {
+  return provider === "s3" ? "AWS S3" : "Cloudflare R2";
+}
+
+/** Stops syncing with one provider's bucket (every device follows); the bucket keeps its copy. */
+export function disableSync(provider: SyncProvider): void {
+  if (attempt(() => core().call({ op: "sync.disable", provider })) !== undefined) {
     reload();
+    ui.sync = Object.keys(ui.syncTargets).length ? ui.sync : { configured: false, state: "idle", message: undefined, at: 0 };
+    toast(`${providerName(provider)} is off`);
   }
 }
 
@@ -1094,6 +1137,16 @@ export function listen(): void {
           if (entry) entry.done = Number(event.done);
         }
         break;
+      }
+      // The core owns no clipboard: a session's copy and paste go through Tarve's.
+      case "clipboard.copy":
+        clipboard.writeText(String(event.message ?? "")).catch(() => toast("Could not reach the clipboard", "error"));
+        return;
+      case "clipboard.paste": {
+        const session = event.session;
+        if (session === undefined) return;
+        clipboard.readText().then(text => { if (text) core().text(session, text); }, () => toast("Could not reach the clipboard", "error"));
+        return;
       }
       case "session.error":
       case "surface.error":

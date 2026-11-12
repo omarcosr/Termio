@@ -6,13 +6,12 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { dispatchCoreEvent, type CoreEvent } from "./events";
 
-const ABI_VERSION = 1;
+const ABI_VERSION = 2;
 
 /** C ABI of crates/termio-core/src/ffi.rs. */
 const SYMBOLS = {
   termio_abi_version: { args: [], returns: "u32" },
   termio_init: { args: ["ptr"], returns: "i32" },
-  termio_drain_events: { args: ["buffer", "u32"], returns: "i32" },
   termio_call: { args: ["buffer", "u32", "buffer", "u32"], returns: "i32" },
   termio_take_response: { args: ["buffer", "u32"], returns: "i32" },
   termio_surface_attach: { args: ["u32", "u64", "u32", "u32", "u32", "f32"], returns: "i32" },
@@ -109,33 +108,18 @@ export const termioCore = definePlugin({
     const abi = native.termio_abi_version();
     if (abi !== ABI_VERSION) throw new Error(`termio core ABI ${abi}, expected ${ABI_VERSION} (${library.path})`);
 
-    let events = new Uint8Array(64 * 1024);
-    const drain = () => {
-      for (;;) {
-        const written = native.termio_drain_events(events, events.length);
-        if (written === 0) return;
-        if (written < 0) {
-          events = new Uint8Array(-written);
-          continue;
-        }
-        for (const line of decoder.decode(events.subarray(0, written)).split("\n")) {
-          if (line) dispatchCoreEvent(JSON.parse(line) as CoreEvent);
-        }
-      }
-    };
-    // Called from a core thread; Bun runs it on this thread, where the queue is drained.
-    // Other runtimes (txiki.js) have no thread-safe callbacks: the queue is polled instead.
-    const bunFfi = typeof (globalThis as { Bun?: unknown }).Bun === "undefined" ? undefined : (require(["bun", "ffi"].join(":")) as typeof import("bun:ffi"));
-    const wake = bunFfi ? new bunFfi.JSCallback(drain, { args: [], returns: "void", threadsafe: true }) : undefined;
-    const poll = wake ? undefined : setInterval(drain, 16);
-    const started = native.termio_init(wake ? wake.ptr : null);
+    // Core events arrive on Tarve's plugin channel, one JSON document each, from any core thread.
+    const off = ctx.events("termio.events").on(bytes => dispatchCoreEvent(JSON.parse(decoder.decode(bytes)) as CoreEvent));
+    // Events emitted before the app starts wait in Tarve and arrive once it is up.
+    const started = native.termio_init(ctx.emitAddress());
     if (started !== 0) throw new Error(`termio core failed to start (${started})`);
     ctx.onClosed(() => {
       client = undefined;
-      wake?.close();
-      if (poll) clearInterval(poll);
+      off();
     });
 
+    // Bun's FFI takes a u64 as bigint; txiki.js and QuickJS take numbers.
+    const bunFfi = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
     let response = new Uint8Array(64 * 1024);
     const check = (code: number, what: string) => {
       if (code < 0 && code !== -3) throw new Error(`termio core: ${what} failed (${code})`);

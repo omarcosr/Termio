@@ -82,8 +82,8 @@ export function Field(props: {
   );
 }
 
-export function TextField(props: { id?: string; value: string; onChange: (value: string) => void; onSubmit?: (value: string) => void; placeholder?: string; type?: InputType; style?: Style }) {
-  return <Input id={props.id} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle(), ...props.style }} />;
+export function TextField(props: { id?: string; value: string; onChange: (value: string) => void; onSubmit?: (value: string) => void; placeholder?: string; type?: InputType; style?: Style; autoFocus?: boolean }) {
+  return <Input id={props.id} autoFocus={props.autoFocus} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle(), ...props.style }} />;
 }
 
 type Tone = "primary" | "quiet" | "danger";
@@ -95,12 +95,13 @@ const buttonTones = (): Record<Tone, Style> => ({
   danger: { background: "transparent", foreground: color.danger, borderColor: color.line, borderWidth: 1, hover: { background: color.dangerSoft, borderColor: color.danger } },
 });
 
-export function Action(props: { label: string; onClick: () => void; tone?: Tone; icon?: IconId; disabled?: boolean; shortcut?: string }) {
+/** `busy`: the action is running — a spinner replaces the icon and further clicks are ignored. */
+export function Action(props: { label: string; onClick: () => void; tone?: Tone; icon?: IconId; disabled?: boolean; busy?: boolean; shortcut?: string }) {
   const tone = buttonTones()[props.tone ?? "quiet"];
   const ink = String(tone.foreground);
   return (
     <Pressable
-      onClick={props.disabled ? undefined : props.onClick}
+      onClick={props.disabled || props.busy ? undefined : props.onClick}
       disabled={props.disabled}
       focusable
       style={{
@@ -117,7 +118,7 @@ export function Action(props: { label: string; onClick: () => void; tone?: Tone;
         ...tone,
       }}
     >
-      {props.icon ? <Glyph name={props.icon} size={15} color={ink} /> : null}
+      {props.busy ? <Row style={{ width: 15, height: 15, spin: 800 }}><Glyph name="loader" size={15} color={ink} strokeWidth={2.25} /></Row> : props.icon ? <Glyph name={props.icon} size={15} color={ink} /> : null}
       <Text size={13} weight={600} color={ink} style={{ whiteSpace: "nowrap" }}>{props.label}</Text>
       {props.shortcut ? <Text size={11} color={props.tone === "primary" ? color.accentInk : color.faint} style={mono}>{props.shortcut}</Text> : null}
     </Pressable>
