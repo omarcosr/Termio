@@ -361,7 +361,7 @@ function Handle({ session, which, at }: { session: number; which: "start" | "end
       onDragMove={event => handleMove(event)}
       onDragEnd={() => { dragging = undefined; }}
       control={{ role: "button", label: which === "start" ? "Selection start" : "Selection end" }}
-      style={{ position: "absolute", left: Math.max(0, Math.min(dropX - pad, state.width - HANDLE - pad * 2)), top, width: HANDLE + pad * 2, height: HANDLE + pad, padding: { left: Math.min(pad, Math.max(0, dropX)), right: pad, bottom: pad } }}
+      style={{ position: "absolute", cursor: "grab", left: Math.max(0, Math.min(dropX - pad, state.width - HANDLE - pad * 2)), top, width: HANDLE + pad * 2, height: HANDLE + pad, padding: { left: Math.min(pad, Math.max(0, dropX)), right: pad, bottom: pad } }}
     >
       <Row style={{ width: HANDLE, height: HANDLE, background: color.accent, radius: pointsLeft ? { topLeft: 0, topRight: round, bottomLeft: round, bottomRight: round } : { topLeft: round, topRight: 0, bottomLeft: round, bottomRight: round } }} />
     </Pressable>
@@ -378,7 +378,7 @@ function copySelection(session: number): void {
 
 function ToolbarAction({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <Pressable focusable={false} onClick={onClick} control={{ role: "button", label }} style={{ height: 40, padding: { left: 14, right: 14 }, align: "center", justify: "center", radius: radius.control, hover: { background: color.hover } }}>
+    <Pressable focusable={false} onClick={onClick} control={{ role: "button", label }} style={{ height: 40, padding: { left: 14, right: 14 }, align: "center", justify: "center", cursor: "pointer", radius: radius.control, hover: { background: color.hover } }}>
       <Text size={13.5} weight={600} color={color.text} style={{ whiteSpace: "nowrap" }}>{label}</Text>
     </Pressable>
   );
@@ -465,7 +465,7 @@ export function TerminalPane({ session }: { session: number }) {
   return (
     <Surface
       id={terminalNodeId(session)}
-      style={{ flex: 1 }}
+      style={{ flex: 1, cursor: "text" }}
       onSurface={event => onSurface(session, event)}
       onSize={size => { pane(session).width = size.width; pane(session).height = size.height; }}
       onPointerMove={point => {

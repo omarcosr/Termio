@@ -352,7 +352,7 @@ function Editor() {
                   focusable
                   onClick={() => { data.color = name; }}
                   control={{ role: "radio", label: name, checked: (data.color ?? "slate") === name }}
-                  style={{ width: 22, height: 22, radius: 11, background: swatch, borderColor: (data.color ?? "slate") === name ? color.text : "transparent", borderWidth: 2 }}
+                  style={{ width: 22, height: 22, radius: 11, cursor: (data.color ?? "slate") === name ? "default" : "pointer", background: swatch, borderColor: (data.color ?? "slate") === name ? color.text : "transparent", borderWidth: 2 }}
                 />
               ))}
             </Row>

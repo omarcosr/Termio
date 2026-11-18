@@ -41,6 +41,7 @@ export function Hint({ children, tone = "muted" }: { children: string; tone?: "m
 }
 
 const inputStyle = (): Style => ({
+  cursor: "text",
   height: 34,
   background: color.canvas,
   borderColor: color.line,
@@ -112,6 +113,7 @@ export function Action(props: { label: string; onClick: () => void; tone?: Tone;
         direction: "row",
         align: "center",
         gap: 8,
+        cursor: props.disabled || props.busy ? "default" : "pointer",
         opacity: props.disabled ? 0.45 : 1,
         transition: { all: { duration: 120, easing: "easeOut" } },
         focusVisible: { outlineWidth: 2, outlineColor: color.accent },
@@ -138,6 +140,7 @@ export function IconAction(props: { icon: IconId; label: string; onClick: () => 
         radius: radius.control,
         align: "center",
         justify: "center",
+        cursor: "pointer",
         hover: { background: color.hover },
         focusVisible: { outlineWidth: 2, outlineColor: color.accent },
       }}
@@ -156,7 +159,7 @@ export function Segments<T extends string>(props: { value: T; options: readonly 
         return (
           <Pressable
             key={option.value}
-            onClick={() => props.onChange(option.value)}
+            onClick={active ? undefined : () => props.onChange(option.value)}
             focusable
             style={{
               height: 26,
@@ -164,6 +167,7 @@ export function Segments<T extends string>(props: { value: T; options: readonly 
               radius: radius.control - 2,
               align: "center",
               justify: "center",
+              cursor: active ? "default" : "pointer",
               background: active ? color.raised : "transparent",
               hover: { background: active ? color.raised : color.hover },
             }}

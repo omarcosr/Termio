@@ -116,7 +116,7 @@ function Tabs() {
         focusable={false}
         onClick={() => activate("home")}
         control={{ role: "tab", label: "Vault", selected: home }}
-        style={{ direction: "row", align: "center", gap: 8, height: 30, shrink: 0, padding: narrow ? { left: 6, right: 6 } : { left: 10, right: 12 }, radius: radius.control, background: home ? color.raised : "transparent", borderColor: home ? color.line : "transparent", borderWidth: 1, hover: { background: home ? color.raised : color.hover } }}
+        style={{ direction: "row", align: "center", gap: 8, height: 30, shrink: 0, cursor: home ? "default" : "pointer", padding: narrow ? { left: 6, right: 6 } : { left: 10, right: 12 }, radius: radius.control, background: home ? color.raised : "transparent", borderColor: home ? color.line : "transparent", borderWidth: 1, hover: { background: home ? color.raised : color.hover } }}
       >
         <Row style={{ width: 18, height: 18, radius: 5, background: color.accent, align: "center", justify: "center" }}>
           <Glyph name="terminal" size={11} color={color.accentInk} strokeWidth={2.5} />
@@ -289,6 +289,7 @@ function NavItem({ view, icon, label, count }: { view: View; icon: IconId; label
         align: "center",
         gap: 10,
         height: 34,
+        cursor: active ? "default" : "pointer",
         padding: { left: 10, right: 10 },
         radius: radius.control,
         background: active ? color.raised : "transparent",
@@ -361,7 +362,7 @@ function BottomNav() {
             focusable
             onClick={() => { ui.view = item.view; ui.error = undefined; }}
             control={{ role: "tab", label: item.label, selected: active }}
-            style={{ direction: "column", align: "center", justify: "center", gap: 4, minWidth: 0, radius: radius.control, focusVisible: { outlineWidth: 2, outlineColor: color.accent } }}
+            style={{ direction: "column", align: "center", justify: "center", gap: 4, minWidth: 0, cursor: active ? "default" : "pointer", radius: radius.control, focusVisible: { outlineWidth: 2, outlineColor: color.accent } }}
           >
             <Glyph name={item.icon} size={19} color={active ? color.accent : color.muted} />
             <Text size={10.5} weight={active ? 650 : 500} color={active ? color.text : color.muted} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{item.label}</Text>
@@ -414,7 +415,7 @@ function StatusBar({ info, panes }: { info: SessionInfo; panes: number }) {
         onDragEnd={finishDrag}
         onClick={() => focusPane(info.session)}
         control={{ role: "button", label: "Drag to move this terminal" }}
-        style={{ direction: "row", align: "center", gap: 8, height: 22, shrink: 1, minWidth: 0, padding: { left: 4, right: 8 }, radius: radius.control, hover: { background: color.hover } }}
+        style={{ direction: "row", align: "center", gap: 8, height: 22, shrink: 1, minWidth: 0, cursor: "grab", padding: { left: 4, right: 8 }, radius: radius.control, hover: { background: color.hover } }}
       >
         <Glyph name="grip" size={12} color={color.faint} />
         <Row gap={6} align="center">
@@ -466,7 +467,7 @@ function AgentChip({ hostId, session }: { hostId: string; session: number }) {
       focusable={false}
       onClick={running ? undefined : install?.state === "done" ? () => reconnect(session) : () => installAgent(hostId)}
       control={{ role: "button", label }}
-      style={{ direction: "row", align: "center", gap: 6, height: 22, shrink: 0, padding: { left: 8, right: 8 }, radius: 11, background: color.accentSoft, maxWidth: 420, hover: { background: color.hover } }}
+      style={{ direction: "row", align: "center", gap: 6, height: 22, shrink: 0, cursor: running ? "default" : "pointer", padding: { left: 8, right: 8 }, radius: 11, background: color.accentSoft, maxWidth: 420, hover: { background: color.hover } }}
     >
       <Glyph name={icon} size={12} color={tone} />
       {compact() ? null : <Text size={11.5} weight={600} color={tone} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{label}</Text>}
@@ -502,7 +503,7 @@ function TerminalTab({ tab, visible }: { tab: Tab; visible: boolean }) {
               {/* Not focusable: the keys belong to the terminal, and a focused Pressable would take
                   Enter and Space as clicks (and show its ring for them). Splits mark the focused
                   pane with the border above instead. */}
-              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch() && tapOpensKeyboard(session)) openKeyboard(session); }} onPinch={pinchFont} style={{ position: "relative", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0 }}>
+              <Pressable flex={1} focusable={false} onClick={() => { focusPane(session); if (touch() && tapOpensKeyboard(session)) openKeyboard(session); }} onPinch={pinchFont} style={{ position: "relative", cursor: "default", padding: { left: index === 0 ? 3 : 0 }, background: color.terminal, radius: 0 }}>
                 <TerminalPane session={session} />
                 <SessionOverlay info={info} />
                 {touch() ? <SelectionOverlay session={session} /> : null}

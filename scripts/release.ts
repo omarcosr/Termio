@@ -2,7 +2,7 @@
  * Builds, signs and publishes a Termio release on GitHub, which the app's updater reads
  * (app/state/updates.ts).
  *
- *   bun run release                    Windows executable
+ *   bun run release                    Windows executable and its installer (Termio-Setup-<version>-win32-x64.exe)
  *   bun run release --android          also the Android APK
  *   bun run release --notes "…"        release notes (shown in the app and on GitHub)
  *   bun run release --dry              build and sign into dist/updates, publish nothing
@@ -68,6 +68,12 @@ const artifacts: string[] = [];
 run(["cargo", "build", "--release", "-p", "termio-core"]);
 tarve("build", "app/desktop.tsx", "--runtime", "txiki", "--version", version, "--outfile", join(build, "Termio.exe"));
 artifacts.push(`win32-x64=${join(build, "Termio.exe")}`);
+// The standard Tarve installer (per-user wizard, shortcuts, Apps & features, Uninstall.exe) for
+// first installs from the release page; the app updates itself afterwards, so it stays out of latest.json.
+const setupDir = join(build, "setup");
+tarve("package", join(build, "Termio.exe"), "--format", "setup", "--entry", "app/desktop.tsx", "--version", version, "--out", setupDir);
+const setups = readdirSync(setupDir).filter(name => name.endsWith(".exe")).map(name => join(setupDir, name));
+if (!setups.length) fail(`no installer in ${setupDir}`);
 
 if (values.android) {
   // Android only installs an update signed with the same key as the installed APK.
@@ -88,7 +94,7 @@ tarve(
   ...(values.notes ? ["--notes", values.notes] : []),
 );
 
-const files = readdirSync(out).filter(name => name !== "latest.json").map(name => join(out, name));
+const files = [...readdirSync(out).filter(name => name !== "latest.json").map(name => join(out, name)), ...setups];
 if (values.dry) {
   console.log(`release: ${tag} built and signed in ${out}; nothing published (--dry)`);
   process.exit(0);

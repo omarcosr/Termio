@@ -62,7 +62,7 @@ function ThemeSwatch({ theme, selected, narrow }: { theme: (typeof THEMES)[numbe
     <Pressable
       focusable
       onClick={() => saveAppearance({ theme: theme.value })}
-      style={{ direction: "column", gap: 8, flex: narrow ? undefined : 1, width: narrow ? 96 : undefined, minWidth: 0, shrink: 0, padding: 4, radius: 10, borderColor: selected ? color.accent : "transparent", borderWidth: 2, hover: { borderColor: selected ? color.accent : color.lineStrong } }}
+      style={{ direction: "column", gap: 8, flex: narrow ? undefined : 1, width: narrow ? 96 : undefined, minWidth: 0, shrink: 0, cursor: selected ? "default" : "pointer", padding: 4, radius: 10, borderColor: selected ? color.accent : "transparent", borderWidth: 2, hover: { borderColor: selected ? color.accent : color.lineStrong } }}
     >
       <Column gap={6} style={{ height: 58, padding: 10, radius: 7, background: background!, borderColor: color.line, borderWidth: 1 }}>
         <Row style={{ width: 34, height: 4, radius: 2, background: foreground! }} />
@@ -96,7 +96,7 @@ function SettingsNav({ height }: { height: number }) {
       {PAGES.map(item => {
         const active = page === item.value;
         return (
-          <Pressable key={item.value} focusable onClick={() => { page = item.value; ui.settingsOpen = true; }} style={{ direction: "row", align: "center", gap: 10, height: 34, padding: { left: 10, right: 10 }, radius: 7, background: active ? color.raised : "transparent", hover: { background: active ? color.raised : color.hover } }}>
+          <Pressable key={item.value} focusable onClick={() => { page = item.value; ui.settingsOpen = true; }} style={{ direction: "row", align: "center", gap: 10, height: 34, cursor: active ? "default" : "pointer", padding: { left: 10, right: 10 }, radius: 7, background: active ? color.raised : "transparent", hover: { background: active ? color.raised : color.hover } }}>
             <Glyph name={item.icon} size={15} color={active ? color.accent : color.muted} />
             <Text size={13} weight={active ? 600 : 500} color={active ? color.text : color.muted}>{item.label}</Text>
           </Pressable>
