@@ -5,16 +5,13 @@
     "": {
       "name": "termio",
       "dependencies": {
-        "@tarve/core": "0.13.3",
+        "@tarve/core": "^0.13.4",
       },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.9.0",
       },
     },
-  },
-  "patchedDependencies": {
-    "@tarve/core@0.13.3": "patches/@tarve%2Fcore@0.13.3.patch",
   },
   "packages": {
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.25.0", "", { "os": "aix", "cpu": "ppc64" }, "sha512-O7vun9Sf8DFjH2UtqK8Ku3LkquL9SZL8OLY1T5NZkA34+wG3OQF7cl4Ql8vdNzM6fzBbYfLaiRLIOZ+2FOCgBQ=="],
@@ -67,7 +64,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ZENoHJBxA20C2zFzh6AI4fT6RraMzjYw4xKWemRTRmRVtN9c5DcH9r/f2ihEkMjOW5eGgrwCslG/+Y/3bL+DHQ=="],
 
-    "@tarve/core": ["@tarve/core@0.13.3", "", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "os": [ "linux", "win32", ], "cpu": "x64", "bin": { "tarve": "dist/npm/cli.js" } }, "sha512-SoalN2z/hy/0C8eT8h4VY71DVVjB5VasxQCncGKTOxSXqb2+obVYO4tKllBVIj7LHFUH8rJMOy+dXswTirZfBA=="],
+    "@tarve/core": ["@tarve/core@0.13.4", "", { "dependencies": { "esbuild": "0.25.0", "resedit": "3.1.0" }, "os": [ "linux", "win32", ], "cpu": "x64", "bin": { "tarve": "dist/npm/cli.js" } }, "sha512-Q3qlEWluh0L+uz6ZWgO801LlhJeYajX7zbTofHgJElTBf946ZBRh/fOpuBr2k15GIXPwbjTloxC5ITDUzaSqUw=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
