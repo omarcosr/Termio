@@ -18,6 +18,8 @@ pub trait Events: Send + Sync + 'static {
     fn latency(&self, ms: u64);
     /// Wire bytes received so far: what the link actually carried.
     fn received(&self, _bytes: u64) {}
+    /// The link is down: why, and how long until the next attempt.
+    fn retrying(&self, _reason: &str, _delay: Duration) {}
     /// The session ended: the shell exited (`None` is a clean exit) or the agent is gone.
     fn ended(&self, reason: Option<String>);
 }
@@ -294,6 +296,7 @@ pub async fn run(address: SocketAddr, rendezvous: Rendezvous, columns: u16, line
                     return events.ended(Some(format!("gave up reconnecting: {reason}")));
                 };
                 events.status("reconnecting");
+                events.retrying(&reason, delay);
                 let deadline = tokio::time::sleep(delay);
                 tokio::pin!(deadline);
                 loop {

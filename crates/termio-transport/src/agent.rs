@@ -29,6 +29,9 @@ impl Events for Adapter {
     fn latency(&self, ms: u64) {
         self.0.notice("latency", &ms.to_string());
     }
+    fn retrying(&self, reason: &str, delay: Duration) {
+        self.0.notice("reconnect", &format!("{reason}; retrying in {} s", delay.as_secs().max(1)));
+    }
     fn ended(&self, reason: Option<String>) {
         self.0.closed(reason);
     }
@@ -97,6 +100,23 @@ fn refill_spare(target: Target, verifier: Arc<dyn Verifier>) {
     });
 }
 
+/// How long a freshly started agent gets to answer over UDP before the session falls back to SSH.
+const PROBE: Duration = Duration::from_secs(4);
+/// Servers whose agent never answered over UDP: later tabs skip starting one there.
+static UDP_BLOCKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn udp_blocked(target: &Target) -> bool {
+    UDP_BLOCKED.lock().unwrap_or_else(|p| p.into_inner()).contains(&spare_key(target))
+}
+
+fn mark_udp_blocked(target: &Target) {
+    let mut blocked = UDP_BLOCKED.lock().unwrap_or_else(|p| p.into_inner());
+    let key = spare_key(target);
+    if !blocked.contains(&key) {
+        blocked.push(key);
+    }
+}
+
 fn resolve(host: &str, port: u16) -> Option<SocketAddr> {
     (host, port).to_socket_addrs().ok()?.next()
 }
@@ -112,7 +132,18 @@ impl AgentShell {
             } else {
                 match take_spare(&target) {
                     Some((address, rendezvous)) if reachable(address, &rendezvous, Duration::from_millis(1500)).await => Ok((address, rendezvous)),
-                    _ => start_agent(&target, verifier.clone()).await,
+                    _ if udp_blocked(&target) => Err("UDP to the agent does not get through on this route; using plain SSH".to_owned()),
+                    // The agent came up over SSH, but SSH may reach the server through a proxy or a
+                    // TCP-only port forward that its UDP port is not behind: check before trusting it,
+                    // or the tab would sit "reconnecting" to an address that never answers.
+                    _ => match start_agent(&target, verifier.clone()).await {
+                        Ok((address, rendezvous)) if reachable(address, &rendezvous, PROBE).await => Ok((address, rendezvous)),
+                        Ok((address, rendezvous)) => {
+                            mark_udp_blocked(&target);
+                            Err(format!("the agent's UDP port {} is unreachable at {}; using plain SSH", rendezvous.port, address.ip()))
+                        }
+                        Err(reason) => Err(reason),
+                    },
                 }
             };
             if started.is_ok() && std::env::var_os("TERMIO_NO_SPARE").is_none() {

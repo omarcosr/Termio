@@ -725,7 +725,8 @@ where
 }
 
 /// The Linux agent binary that ships with the app: `TERMIO_AGENT_BINARY`, else `agent/` next to
-/// the executable, else this checkout's `dist/agent/`.
+/// the executable, else this checkout's `dist/agent/`, else the copy embedded at build time
+/// (written out to a temporary file for the upload).
 fn agent_binary() -> Option<PathBuf> {
     const NAME: &str = "termio-agent-linux-x64";
     let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("agent").join(NAME)));
@@ -735,6 +736,23 @@ fn agent_binary() -> Option<PathBuf> {
         .chain(beside)
         .chain([PathBuf::from("dist").join("agent").join(NAME)])
         .find(|path| path.is_file())
+        .or_else(|| embedded_agent(NAME))
+}
+
+#[cfg(agent_embedded)]
+fn embedded_agent(name: &str) -> Option<PathBuf> {
+    static AGENT: &[u8] = include_bytes!(env!("TERMIO_AGENT_PATH"));
+    let path = std::env::temp_dir().join(name);
+    if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == AGENT.len() as u64) && std::fs::read(&path).is_ok_and(|bytes| bytes == AGENT) {
+        return Some(path);
+    }
+    std::fs::write(&path, AGENT).ok()?;
+    Some(path)
+}
+
+#[cfg(not(agent_embedded))]
+fn embedded_agent(_name: &str) -> Option<PathBuf> {
+    None
 }
 
 /// Installs the agent on a host over SFTP into `~/.termio/bin`, where sessions look for it.

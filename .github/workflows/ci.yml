@@ -39,6 +39,8 @@ jobs:
   # then the txiki.js executable and its installer.
   app:
     runs-on: windows-latest
+    # The core embeds the Linux agent (crates/termio-core/build.rs), so it is built first.
+    needs: agent-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,6 +54,14 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'patches/**') }}
           restore-keys: bun-${{ runner.os }}-
       - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: termio-agent-linux-x64
+          path: dist/agent-download
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/agent | Out-Null
+          Move-Item -Force dist/agent-download/termio-agent dist/agent/termio-agent-linux-x64
       - run: cargo build --release -p termio-core
       - run: bun run typecheck
       - run: bun test
