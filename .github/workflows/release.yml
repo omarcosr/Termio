@@ -1,0 +1,149 @@
+# Publishes a release when a `v*` tag is pushed (git tag v0.2.5 && git push origin v0.2.5).
+# Same steps as scripts/release.ts, for Windows and Android at once.
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   TARVE_UPDATE_PRIVATE_KEY         contents of ./tarve-update.key (signs latest.json)
+#   ANDROID_KEYSTORE_BASE64          base64 of the release keystore (the one that signed installed APKs)
+#   TARVE_ANDROID_KEYSTORE_PASSWORD  its password
+#   TARVE_ANDROID_KEY_ALIAS          optional, defaults to "release"
+#   TARVE_ANDROID_KEY_PASSWORD       optional, defaults to the keystore password
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  agent-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - run: cargo build --release -p termio-agent --target x86_64-unknown-linux-musl
+      - run: mkdir -p dist/agent && strip -o dist/agent/termio-agent-linux-x64 target/x86_64-unknown-linux-musl/release/termio-agent
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent
+          path: dist/agent/termio-agent-linux-x64
+
+  windows:
+    needs: agent-linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches package.json
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") { Write-Error "tag ${{ github.ref_name }} but package.json is $version"; exit 1 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent
+          path: dist/agent
+      - run: cargo build --release -p termio-core
+      - name: Download txiki.js
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest https://github.com/saghul/txiki.js/releases/download/v26.6.0/txiki-windows-x86_64.zip -OutFile "$env:RUNNER_TEMP\txiki.zip"
+          Expand-Archive "$env:RUNNER_TEMP\txiki.zip" -DestinationPath "$env:RUNNER_TEMP\txiki"
+          "TARVE_TXIKI=$env:RUNNER_TEMP\txiki\txiki-windows-x86_64\tjs.exe" >> $env:GITHUB_ENV
+      - shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          bun x tarve build app/desktop.tsx --runtime txiki --version $version --outfile dist/release/Termio.exe
+          bun x tarve package dist/release/Termio.exe --format setup --entry app/desktop.tsx --version $version --out dist/release/setup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/release/Termio.exe
+            dist/release/setup/*.exe
+
+  android:
+    needs: agent-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent
+          path: dist/agent
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+      - run: cargo ndk -t arm64-v8a build --release -p termio-core
+      - name: Build and sign the APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          TARVE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.TARVE_ANDROID_KEYSTORE_PASSWORD }}
+          TARVE_ANDROID_KEY_ALIAS: ${{ secrets.TARVE_ANDROID_KEY_ALIAS || 'release' }}
+          TARVE_ANDROID_KEY_PASSWORD: ${{ secrets.TARVE_ANDROID_KEY_PASSWORD || secrets.TARVE_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          export TARVE_ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          bun x tarve build app/main.tsx --target android-arm64 --version "${GITHUB_REF_NAME#v}" --outfile dist/release/Termio.apk
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/release/Termio.apk
+
+  # Signs latest.json and publishes; the manifest goes up last so an app never sees one whose
+  # files are missing.
+  publish:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+      - name: Sign and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARVE_UPDATE_PRIVATE_KEY: ${{ secrets.TARVE_UPDATE_PRIVATE_KEY }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          repo=$(jq -r .updates.repo package.json)
+          key=$(jq -r .updates.publicKey package.json)
+          bun x tarve release --version "$version" \
+            --artifact win32-x64=dist/release/windows/Termio.exe \
+            --artifact android-arm64=dist/release/android/Termio.apk \
+            --public-key "$key" \
+            --base-url "https://github.com/$repo/releases/download/$tag/" \
+            --out dist/updates
+          files=$(find dist/updates -type f ! -name latest.json)
+          gh release create "$tag" --repo "$repo" --draft --verify-tag --title "Termio $version" --generate-notes $files dist/release/windows/setup/*.exe
+          gh release upload "$tag" --repo "$repo" dist/updates/latest.json
+          gh release edit "$tag" --repo "$repo" --draft=false --latest
