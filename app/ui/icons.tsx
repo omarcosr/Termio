@@ -34,6 +34,8 @@ const nodes = {
   download: [p("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"), p("m7 10 5 5 5-5"), p("M12 15V3")],
   up: [p("m5 12 7-7 7 7"), p("M12 19V5")],
   broadcast: [p("M4.9 19.1C1 15.2 1 8.8 4.9 4.9"), p("M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"), ["circle", { cx: 12, cy: 12, r: 2 }], p("M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"), p("M19.1 4.9C23 8.8 23 15.1 19.1 19")],
+  panelClose: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], p("M9 3v18"), p("m16 15-3-3 3-3")],
+  panelOpen: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], p("M9 3v18"), p("m14 9 3 3-3 3")],
   grip: [["circle", { cx: 9, cy: 5, r: 1 }], ["circle", { cx: 9, cy: 12, r: 1 }], ["circle", { cx: 9, cy: 19, r: 1 }], ["circle", { cx: 15, cy: 5, r: 1 }], ["circle", { cx: 15, cy: 12, r: 1 }], ["circle", { cx: 15, cy: 19, r: 1 }]],
 } satisfies Record<string, readonly SvgNode[]>;
 

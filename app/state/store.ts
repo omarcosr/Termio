@@ -1169,6 +1169,8 @@ export interface Appearance {
   padding: number;
   /** The program a new local tab runs; empty for the system default. */
   shell: string;
+  /** The vault's side menu shows icons only. */
+  sidebarCollapsed?: boolean;
 }
 
 const DEFAULT_APPEARANCE: Appearance = { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" };

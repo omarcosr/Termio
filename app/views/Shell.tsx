@@ -1,4 +1,4 @@
-import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem, clipboard } from "@tarve/core";
+import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem, clipboard, viewport } from "@tarve/core";
 import {
   activate,
   closePane,
@@ -28,14 +28,14 @@ import {
   hoverDrop,
   startDrag,
   type DropZone,
-  dismissFault, refresh } from "../state/store";
+  dismissFault, refresh, saveAppearance } from "../state/store";
 import type { DragEndEvent } from "@tarve/core";
 import { Glyph, type IconId } from "../ui/icons";
 import { ANDROID, touch, Action, compact, dialogWidth, IconAction, mono, TextField } from "../ui/kit";
 import { color, font, radius } from "../ui/tokens";
 import { cancelPath, Files } from "./Files";
 import { HostKeyPrompt } from "./HostKeyPrompt";
-import { closeImport, Hosts } from "./Hosts";
+import { closeImport, Hosts, QuickConnect, quickBar } from "./Hosts";
 import { closeNewKey, Keychain, KnownHosts } from "./Keychain";
 import { Snippets } from "./Snippets";
 import { Sync } from "./Sync";
@@ -101,9 +101,37 @@ function TabButton({ tab }: { tab: Tab }) {
   );
 }
 
+/** Title bar widths, measured: the whole tab area and the tabs it currently holds. */
+const titleSizes = { title: 0, home: 0, tabs: 0 };
+
+function measure(which: keyof typeof titleSizes, width: number): void {
+  if (Math.abs(titleSizes[which] - width) < 1) return;
+  titleSizes[which] = width;
+  refresh();
+}
+
+/**
+ * Where the quick-connect field goes: centred on the window, as wide as it can be up to 520 px,
+ * clear of the tabs on its left and of the window controls on its right. Undefined when it would
+ * have less than 280 px: it then waits on the hosts page.
+ */
+function quickSlot(): { left: number; width: number } | undefined {
+  const { title, home, tabs } = titleSizes;
+  if (!title) return undefined;
+  const centre = viewport().width / 2;
+  const gap = 16;
+  const width = Math.min(520, 2 * (centre - (6 + home + 4 + 4 + tabs) - gap), 2 * (title - centre - gap));
+  return width >= 280 ? { left: centre - width / 2, width } : undefined;
+}
+
 function Tabs() {
   const home = ui.active === "home";
   const narrow = compact();
+  const quick = narrow ? undefined : quickSlot();
+  if (quickBar.shown !== (quick !== undefined)) {
+    quickBar.shown = quick !== undefined;
+    queueMicrotask(refresh);
+  }
   const strip = [
     ui.tabs.length ? <Row key="sep" style={{ width: 1, height: 16, shrink: 0, background: color.line, margin: { left: 4, right: 4 } }} /> : null,
     ...ui.tabs.map(tab => <TabButton key={tab.id} tab={tab} />),
@@ -111,10 +139,11 @@ function Tabs() {
     ui.drag ? <NewTabZone key="zone" /> : null,
   ];
   return (
-    <Row gap={4} align="center" flex={1} style={{ padding: { left: 6 }, minWidth: 0 }}>
+    <Row gap={4} align="center" flex={1} style={{ padding: { left: 6 }, minWidth: 0, position: "relative" }} onSize={size => measure("title", size.borderBox.width)}>
       <Pressable
         focusable={false}
         onClick={() => activate("home")}
+        onSize={size => measure("home", size.borderBox.width)}
         control={{ role: "tab", label: "Vault", selected: home }}
         style={{ direction: "row", align: "center", gap: 8, height: 30, shrink: 0, cursor: home ? "default" : "pointer", padding: narrow ? { left: 6, right: 6 } : { left: 10, right: 12 }, radius: radius.control, background: home ? color.raised : "transparent", borderColor: home ? color.line : "transparent", borderWidth: 1, hover: { background: home ? color.raised : color.hover } }}
       >
@@ -131,10 +160,17 @@ function Tabs() {
         </Row>
       ) : (
         <Row gap={4} align="center" flex={1} style={{ minWidth: 0 }}>
-          {strip}
+          <Row gap={4} align="center" style={{ shrink: 1, minWidth: 0, overflow: "hidden" }} onSize={size => measure("tabs", size.borderBox.width)}>
+            {strip}
+          </Row>
           <Row flex={1} dragRegion style={{ height: 30 }} />
         </Row>
       )}
+      {quick ? (
+        <Row align="center" style={{ position: "absolute", top: 0, bottom: 0, left: quick.left, width: quick.width }}>
+          <QuickConnect bar />
+        </Row>
+      ) : null}
     </Row>
   );
 }
@@ -277,7 +313,7 @@ function draggedSessions(): number[] {
   return ui.tabs.find(tab => tab.id === drag.id)?.panes ?? [];
 }
 
-function NavItem({ view, icon, label, count }: { view: View; icon: IconId; label: string; count?: number }) {
+function NavItem({ view, icon, label, count, collapsed }: { view: View; icon: IconId; label: string; count?: number; collapsed?: boolean }) {
   const active = ui.view === view;
   return (
     <Pressable
@@ -287,10 +323,11 @@ function NavItem({ view, icon, label, count }: { view: View; icon: IconId; label
       style={{
         direction: "row",
         align: "center",
+        justify: collapsed ? "center" : "start",
         gap: 10,
         height: 34,
         cursor: active ? "default" : "pointer",
-        padding: { left: 10, right: 10 },
+        padding: collapsed ? 0 : { left: 10, right: 10 },
         radius: radius.control,
         background: active ? color.raised : "transparent",
         hover: { background: active ? color.raised : color.hover },
@@ -298,8 +335,8 @@ function NavItem({ view, icon, label, count }: { view: View; icon: IconId; label
       }}
     >
       <Glyph name={icon} size={16} color={active ? color.accent : color.muted} />
-      <Text size={13} weight={active ? 600 : 500} color={active ? color.text : color.muted} style={{ flex: 1 }}>{label}</Text>
-      {count !== undefined ? <Text size={11.5} color={color.faint}>{String(count)}</Text> : null}
+      {collapsed ? null : <Text size={13} weight={active ? 600 : 500} color={active ? color.text : color.muted} style={{ flex: 1 }}>{label}</Text>}
+      {collapsed || count === undefined ? null : <Text size={11.5} color={color.faint}>{String(count)}</Text>}
     </Pressable>
   );
 }
@@ -315,27 +352,37 @@ function SyncBadge() {
   );
 }
 
-function Sidebar() {
+/** A plain row of the sidebar's foot: an icon, and its label unless the sidebar is collapsed. */
+function SideAction({ icon, label, hint, collapsed, onClick }: { icon: IconId; label: string; hint?: string; collapsed: boolean; onClick: () => void }) {
   return (
-    <Column style={{ width: 216, background: color.panel, borderColor: color.line, borderWidth: { right: 1 }, padding: { top: 14, left: 10, right: 10, bottom: 12 } }} gap={2}>
-      <NavItem view="hosts" icon="server" label="Hosts" count={ui.hosts.length} />
-      <NavItem view="snippets" icon="code" label="Snippets" count={ui.snippets.length} />
-      <NavItem view="keys" icon="key" label="Keychain" count={ui.keys.length} />
-      <NavItem view="known" icon="shield" label="Known hosts" count={ui.known.length} />
-      <NavItem view="forwards" icon="route" label="Forwarding" count={ui.hosts.reduce((sum, host) => sum + (host.data.forwards?.length ?? 0), 0)} />
-      <NavItem view="sync" icon="cloud" label="Sync" />
+    <Pressable focusable onClick={onClick} control={{ role: "button", label }} style={{ direction: "row", align: "center", justify: collapsed ? "center" : "start", gap: 10, height: 34, cursor: "pointer", padding: collapsed ? 0 : { left: 10, right: 10 }, radius: radius.control, hover: { background: color.hover }, focusVisible: { outlineWidth: 2, outlineColor: color.accent } }}>
+      <Glyph name={icon} size={15} color={color.muted} />
+      {collapsed ? null : <Text size={13} color={color.muted} style={{ flex: 1 }}>{label}</Text>}
+      {collapsed || !hint ? null : <Text size={11} color={color.faint} style={mono}>{hint}</Text>}
+    </Pressable>
+  );
+}
+
+function Sidebar() {
+  const collapsed = ui.appearance.sidebarCollapsed === true;
+  return (
+    <Column style={{ width: collapsed ? 56 : 216, shrink: 0, background: color.panel, borderColor: color.line, borderWidth: { right: 1 }, padding: { top: 14, left: 10, right: 10, bottom: 12 } }} gap={2}>
+      <NavItem view="hosts" icon="server" label="Hosts" count={ui.hosts.length} collapsed={collapsed} />
+      <NavItem view="snippets" icon="code" label="Snippets" count={ui.snippets.length} collapsed={collapsed} />
+      <NavItem view="keys" icon="key" label="Keychain" count={ui.keys.length} collapsed={collapsed} />
+      <NavItem view="known" icon="shield" label="Known hosts" count={ui.known.length} collapsed={collapsed} />
+      <NavItem view="forwards" icon="route" label="Forwarding" count={ui.hosts.reduce((sum, host) => sum + (host.data.forwards?.length ?? 0), 0)} collapsed={collapsed} />
+      <NavItem view="sync" icon="cloud" label="Sync" collapsed={collapsed} />
       <Column flex={1} />
-      <Pressable focusable onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} style={{ direction: "row", align: "center", gap: 10, height: 34, padding: { left: 10, right: 10 }, radius: radius.control, hover: { background: color.hover } }}>
-        <Glyph name="search" size={15} color={color.muted} />
-        <Text size={13} color={color.muted} style={{ flex: 1 }}>Commands</Text>
-        <Text size={11} color={color.faint} style={mono}>Ctrl K</Text>
-      </Pressable>
-      <Pressable focusable onClick={lockVault} style={{ direction: "row", align: "center", gap: 10, height: 34, padding: { left: 10, right: 10 }, radius: radius.control, hover: { background: color.hover } }}>
-        <Glyph name="lock" size={15} color={color.muted} />
-        <Text size={13} color={color.muted}>Lock vault</Text>
-      </Pressable>
+      <SideAction icon="search" label="Commands" hint="Ctrl K" collapsed={collapsed} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
+      <SideAction icon="lock" label="Lock vault" collapsed={collapsed} onClick={lockVault} />
+      <SideAction icon={collapsed ? "panelOpen" : "panelClose"} label={collapsed ? "Expand sidebar" : "Collapse sidebar"} collapsed={collapsed} onClick={toggleSidebar} />
     </Column>
   );
+}
+
+function toggleSidebar(): void {
+  saveAppearance({ sidebarCollapsed: !ui.appearance.sidebarCollapsed });
 }
 
 
@@ -538,6 +585,7 @@ function Palette() {
     { value: "local", label: "New local terminal", group: "Actions", shortcut: "Ctrl Shift T" },
     ...(terminal ? [{ value: "split-right", label: "Split right", group: "Actions", shortcut: "Ctrl Shift D" }, { value: "split-down", label: "Split down", group: "Actions", shortcut: "Ctrl Shift E" }] : []),
     { value: "sync", label: "Sync now", group: "Actions" },
+    ...(compact() ? [] : [{ value: "sidebar", label: ui.appearance.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar", group: "Actions" }]),
     { value: "lock", label: "Lock vault", group: "Actions", shortcut: "Ctrl L" },
   ];
   // Keyboard shortcuts mean nothing on a phone.
@@ -565,6 +613,7 @@ function Palette() {
         if (value === "split-right") return split("row");
         if (value === "split-down") return split("column");
         if (value === "sync") return syncNow();
+        if (value === "sidebar") return toggleSidebar();
         if (value === "lock") return lockVault();
       }}
     />
@@ -577,14 +626,14 @@ function Palette() {
  */
 /** The title bar's right end. A phone has no sidebar, so the palette and the lock move up here. */
 function TitleActions() {
-  const settings = <IconAction icon="settings" label="Settings" focusable={false} color={ui.settingsOpen ? color.accent : color.muted} onClick={() => { ui.settingsOpen = true; }} />;
-  if (!compact()) return <Row gap={2} align="center"><SyncBadge />{settings}</Row>;
-  return (
-    <Row gap={0} align="center" style={{ shrink: 0 }}>
-      <IconAction icon="search" label="Commands" focusable={false} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
-      {settings}
-    </Row>
-  );
+      const settings = <IconAction icon="settings" label="Settings" focusable={false} color={ui.settingsOpen ? color.accent : color.muted} onClick={() => { ui.settingsOpen = true; }} />;
+      if (!compact()) return <Row gap={2} align="center"><SyncBadge />{settings}</Row>;
+      return (
+        <Row gap={0} align="center" style={{ shrink: 0 }}>
+          <IconAction icon="search" label="Commands" focusable={false} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
+          {settings}
+        </Row>
+      );
 }
 
 /**

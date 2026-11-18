@@ -1,5 +1,6 @@
-import { Column, Pressable, Row, Scroll, Select, Text, Modal } from "@tarve/core";
+import { Column, Pressable, Row, Scroll, Select, Text, Modal, type Style } from "@tarve/core";
 import {
+  activate,
   connect,
   editHost,
   newHost,
@@ -16,6 +17,8 @@ import { ANDROID, Action, compact, dialogWidth, Field, gutter, Hint, IconAction,
 import { color, labels, radius } from "../ui/tokens";
 
 let quick = "";
+/** Whether the title bar has room for the quick-connect field; the hosts page shows it otherwise. */
+export const quickBar = { shown: false };
 let hovered: string | undefined;
 
 function address(host: HostData): string {
@@ -36,8 +39,34 @@ function quickConnect(text: string): void {
   const existing = ui.hosts.find(host => host.data.address === parsed.address && (host.data.port ?? 22) === parsed.port && (!parsed.user || host.data.user === parsed.user));
   quick = "";
   if (existing) return connect(existing.id);
-  // A new address: save it first so the password or key has somewhere to live.
+  // A new address: save it first so the password or key has somewhere to live. The editor lives
+  // on the hosts page, and the field sits in the title bar over any tab.
+  ui.view = "hosts";
+  activate("home");
   newHost({ ...parsed, name: parsed.address });
+}
+
+/** `user@host:port` to a session: in the title bar on a desktop, atop the hosts on a phone. */
+export function QuickConnect({ bar = false }: { bar?: boolean }) {
+  const parsed = parseQuickConnect(quick);
+  // In the title bar the field is a quiet pill on the panel: no frame until it is pointed at or
+  // focused, the UI font for the hint and the monospace only for what is typed.
+  const style: Style = bar
+    ? { flex: 1, minWidth: 0, height: 30, radius: 15, background: color.canvas, borderColor: "transparent", padding: { left: 32, right: parsed ? 44 : 12 }, fontSize: 12.5, ...(quick ? mono : {}), hover: { borderColor: color.line }, focus: { borderColor: color.accent, outlineWidth: 0 } }
+    : { flex: 1, minWidth: 0, padding: { left: 34, right: 10 }, ...mono, fontSize: 12.5 };
+  return (
+    <Row flex={1} align="center" style={{ position: "relative", minWidth: 0, overflow: "hidden" }}>
+      <TextField id="quick-connect" value={quick} placeholder={bar ? "ssh user@host:port" : "Connect to user@host:port"} onChange={value => { quick = value; }} onSubmit={quickConnect} style={style} />
+      <Row style={{ position: "absolute", left: 11, pointerEvents: "none" }}>
+        <Glyph name="terminal" size={bar ? 13 : 14} color={parsed ? color.accent : color.faint} />
+      </Row>
+      {bar && parsed ? (
+        <Row style={{ position: "absolute", right: 6, height: 18, padding: { left: 6, right: 6 }, radius: 5, background: color.raised, align: "center", pointerEvents: "none" }}>
+          <Text size={10.5} weight={600} color={color.muted}>Enter</Text>
+        </Row>
+      ) : null}
+    </Row>
+  );
 }
 
 function HostRow({ host }: { host: VaultRecord<HostData> }) {
@@ -396,7 +425,7 @@ function sections(visible: VaultRecord<HostData>[]): [string, VaultRecord<HostDa
 
 function HostFilter() {
   return (
-    <Row flex={1} style={{ maxWidth: compact() ? undefined : 240, minWidth: 0, overflow: "hidden", position: "relative" }} align="center">
+    <Row flex={1} style={{ maxWidth: compact() ? undefined : 480, minWidth: 0, overflow: "hidden", position: "relative" }} align="center">
       <TextField id="host-search" value={ui.search} placeholder="Filter" onChange={value => { ui.search = value; }} style={{ flex: 1, minWidth: 0, padding: { left: 32, right: 10 } }} />
       <Row style={{ position: "absolute", left: 10, pointerEvents: "none" }}>
         <Glyph name="search" size={14} color={color.faint} />
@@ -408,7 +437,6 @@ function HostFilter() {
 export function Hosts() {
   const visible = ui.hosts.filter(host => matches(host, ui.search));
   const ordered = sections(visible);
-  const parsed = parseQuickConnect(quick);
   const narrow = compact();
   return (
     <Row flex={1} align="stretch" style={{ position: "relative", minHeight: 0 }}>
@@ -425,24 +453,9 @@ export function Hosts() {
               <Action tone="primary" icon="plus" label={narrow ? "New" : "New host"} onClick={() => newHost()} />
             </Row>
           </Row>
-          <Row gap={10} style={{ minWidth: 0 }}>
-            <Row flex={2} align="center" style={{ position: "relative", minWidth: 0, overflow: "hidden" }}>
-              <TextField
-                id="quick-connect"
-                value={quick}
-                placeholder="Connect to user@host:port"
-                onChange={value => { quick = value; }}
-                onSubmit={quickConnect}
-                style={{ flex: 1, minWidth: 0, padding: { left: 34, right: 10 }, fontFamily: "Cascadia Mono", fontSize: 12.5 }}
-              />
-              <Row style={{ position: "absolute", left: 11, pointerEvents: "none" }}>
-                <Glyph name="terminal" size={14} color={parsed ? color.accent : color.faint} />
-              </Row>
-            </Row>
-            {narrow ? null : <HostFilter />}
-          </Row>
-          {/* Side by side the two fields do not fit a phone: the filter gets a line of its own. */}
-          {narrow ? <Row style={{ minWidth: 0 }}><HostFilter /></Row> : null}
+          {/* The title bar holds it when it has room: never on a phone, nor beside many tabs. */}
+          {quickBar.shown ? null : <Row style={{ minWidth: 0 }}><QuickConnect /></Row>}
+          <Row style={{ minWidth: 0 }}><HostFilter /></Row>
           {ui.hosts.length > 0 ? (
             <Row gap={10} align="center">
               <Text size={12} color={color.faint}>Sort</Text>
