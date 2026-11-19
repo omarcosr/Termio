@@ -17,6 +17,8 @@ import {
   syncNow,
   tabTitle,
   ui,
+  openAudit,
+  runAudit,
   type SessionInfo,
   type SessionStatus,
   type Tab,
@@ -42,7 +44,9 @@ import { Sync } from "./Sync";
 import { dropSelection, openKeyboard, tapOpensKeyboard, pinchFont, SelectionOverlay, SoftKeyboard, TerminalPane } from "./TerminalPane";
 import { Unlock } from "./Unlock";
 import { Settings } from "./Settings";
+import { Audit, AuditButton } from "./Audit";
 import { Forwards } from "./Forwards";
+import { t } from "../i18n";
 
 const statusTone: Record<SessionStatus, string> = {
   connecting: color.warn,
@@ -96,7 +100,7 @@ function TabButton({ tab }: { tab: Tab }) {
     >
       {tab.kind === "files" ? <Glyph name="folder" size={13} color={active ? color.accent : color.muted} /> : <Row style={{ width: 6, height: 6, radius: 3, background: tabTone(tab) }} />}
       <Text size={12.5} weight={active ? 600 : 500} color={active ? color.text : color.muted} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{title}</Text>
-      <IconAction icon="x" size={22} label={`Close ${title}`} focusable={false} onClick={() => closeTab(tab.id)} />
+      <IconAction icon="x" size={22} label={t("Close {title}", { title })} focusable={false} onClick={() => closeTab(tab.id)} />
     </Pressable>
   );
 }
@@ -135,7 +139,7 @@ function Tabs() {
   const strip = [
     ui.tabs.length ? <Row key="sep" style={{ width: 1, height: 16, shrink: 0, background: color.line, margin: { left: 4, right: 4 } }} /> : null,
     ...ui.tabs.map(tab => <TabButton key={tab.id} tab={tab} />),
-    <IconAction key="new" icon="plus" label="New local terminal" focusable={false} onClick={openLocal} />,
+    <IconAction key="new" icon="plus" label={t("New local terminal")} focusable={false} onClick={openLocal} />,
     ui.drag ? <NewTabZone key="zone" /> : null,
   ];
   return (
@@ -144,7 +148,7 @@ function Tabs() {
         focusable={false}
         onClick={() => activate("home")}
         onSize={size => measure("home", size.borderBox.width)}
-        control={{ role: "tab", label: "Vault", selected: home }}
+        control={{ role: "tab", label: t("Vault"), selected: home }}
         style={{ direction: "row", align: "center", gap: 8, height: 30, shrink: 0, cursor: home ? "default" : "pointer", padding: narrow ? { left: 6, right: 6 } : { left: 10, right: 12 }, radius: radius.control, background: home ? color.raised : "transparent", borderColor: home ? color.line : "transparent", borderWidth: 1, hover: { background: home ? color.raised : color.hover } }}
       >
         <Row style={{ width: 18, height: 18, radius: 5, background: color.accent, align: "center", justify: "center" }}>
@@ -156,7 +160,7 @@ function Tabs() {
         // A phone shows one tab: the open one, with how many there are. A tap lists them all.
         <Row gap={4} align="center" flex={1} style={{ minWidth: 0, padding: { right: 4 } }}>
           {ui.tabs.length ? <TabSwitch /> : <Row flex={1} />}
-          <IconAction icon="plus" label="New local terminal" focusable={false} onClick={openLocal} />
+          <IconAction icon="plus" label={t("New local terminal")} focusable={false} onClick={openLocal} />
         </Row>
       ) : (
         <Row gap={4} align="center" flex={1} style={{ minWidth: 0 }}>
@@ -187,12 +191,12 @@ function TabSwitch() {
       flex={1}
       focusable={false}
       onClick={() => { switcherOpen = true; refresh(); }}
-      control={{ role: "button", label: `${count} open tabs. Switch` }}
+      control={{ role: "button", label: t("{count} open tabs. Switch", { count }) }}
       style={{ direction: "row", align: "center", gap: 8, height: 32, minWidth: 0, padding: { left: 10, right: 6 }, radius: radius.control, background: tab ? color.raised : "transparent", borderColor: color.line, borderWidth: 1 }}
     >
       {tab ? (tab.kind === "files" ? <Glyph name="folder" size={13} color={color.accent} /> : <Row style={{ width: 6, height: 6, radius: 3, background: tabTone(tab), shrink: 0 }} />) : null}
       <Row flex={1} style={{ minWidth: 0, overflow: "hidden" }}>
-        <Text size={12.5} weight={600} color={tab ? color.text : color.muted} style={{ minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{tab ? tabTitle(tab) : count === 1 ? "1 open" : `${count} open`}</Text>
+        <Text size={12.5} weight={600} color={tab ? color.text : color.muted} style={{ minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{tab ? tabTitle(tab) : count === 1 ? t("1 open") : t("{count} open", { count })}</Text>
       </Row>
       <Row style={{ minWidth: 20, height: 20, padding: { left: 6, right: 6 }, radius: 10, background: color.accentSoft, align: "center", justify: "center", shrink: 0 }}>
         <Text size={11} weight={700} color={color.accent}>{String(count)}</Text>
@@ -219,20 +223,20 @@ function TabSwitcher() {
         <Text size={13.5} weight={active ? 650 : 500} color={color.text} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{title}</Text>
         {detail ? <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{detail}</Text> : null}
       </Column>
-      {onClose ? <IconAction icon="x" size={40} label={`Close ${title}`} onClick={onClose} /> : null}
+      {onClose ? <IconAction icon="x" size={40} label={t("Close {title}", { title })} onClick={onClose} /> : null}
     </Pressable>
   );
   const where = (tab: Tab) => {
     const session = tab.kind === "terminal" ? ui.sessions[tab.focus] : undefined;
     const host = ui.hosts.find(record => record.id === (tab.files?.host ?? session?.host));
-    const address = host ? `${host.data.user || "root"}@${host.data.address}` : "local shell";
+    const address = host ? `${host.data.user || "root"}@${host.data.address}` : t("local shell");
     return tab.kind === "files" ? `${address} · ${tab.files?.path ?? ""}` : `${address}${tab.panes.length > 1 ? ` · ${tab.panes.length} panes` : ""}`;
   };
   return (
-    <Modal open={switcherOpen} onOpenChange={open => { if (!open) close(); }} title={`Open tabs · ${ui.tabs.length}`} width={dialogWidth(420)} style={{ padding: 16, gap: 12 }}>
+    <Modal open={switcherOpen} onOpenChange={open => { if (!open) close(); }} title={t("Open tabs · {count}", { count: ui.tabs.length })} width={dialogWidth(420)} style={{ padding: 16, gap: 12 }}>
       <Scroll style={{ maxHeight: 420 }}>
         <Column gap={2}>
-          {row("home", ui.active === "home", <Glyph name="server" size={16} color={ui.active === "home" ? color.accent : color.muted} />, "Vault", "Hosts, keys, snippets", () => go("home"))}
+          {row("home", ui.active === "home", <Glyph name="server" size={16} color={ui.active === "home" ? color.accent : color.muted} />, "Vault", t("Hosts, keys, snippets"), () => go("home"))}
           {ui.tabs.map(tab => row(
             String(tab.id),
             ui.active === tab.id,
@@ -244,7 +248,7 @@ function TabSwitcher() {
           ))}
         </Column>
       </Scroll>
-      <Action icon="plus" label="New local terminal" onClick={() => { switcherOpen = false; openLocal(); }} />
+      <Action icon="plus" label={t("New local terminal")} onClick={() => { switcherOpen = false; openLocal(); }} />
     </Modal>
   );
 }
@@ -257,7 +261,7 @@ function finishDrag(event: DragEndEvent): void {
 /** Where a dragged pane becomes a tab of its own, or a dragged tab goes last. */
 function NewTabZone() {
   const over = ui.dropZone === "new";
-  const label = ui.drag?.kind === "pane" ? "Drop here: own tab" : "Drop here: last";
+  const label = ui.drag?.kind === "pane" ? t("Drop here: own tab") : t("Drop here: last");
   return (
     <Row
       align="center"
@@ -343,7 +347,7 @@ function NavItem({ view, icon, label, count, collapsed }: { view: View; icon: Ic
 
 function SyncBadge() {
   const { configured, state } = ui.sync;
-  const [tone, text] = !configured ? [color.faint, "Sync off"] : state === "running" ? [color.accent, "Syncing"] : state === "error" ? [color.danger, "Sync failed"] : [color.ok, "Synced"];
+  const [tone, text] = !configured ? [color.faint, t("Sync off")] : state === "running" ? [color.accent, t("Syncing")] : state === "error" ? [color.danger, t("Sync failed")] : [color.ok, t("Synced")];
   return (
     <Pressable focusable onClick={() => { ui.view = "sync"; activate("home"); }} style={{ direction: "row", align: "center", gap: 8, height: 30, padding: { left: 10, right: 10 }, radius: radius.control, hover: { background: color.hover } }}>
       <Row style={{ width: 6, height: 6, radius: 3, background: tone }} />
@@ -367,16 +371,16 @@ function Sidebar() {
   const collapsed = ui.appearance.sidebarCollapsed === true;
   return (
     <Column style={{ width: collapsed ? 56 : 216, shrink: 0, background: color.panel, borderColor: color.line, borderWidth: { right: 1 }, padding: { top: 14, left: 10, right: 10, bottom: 12 } }} gap={2}>
-      <NavItem view="hosts" icon="server" label="Hosts" count={ui.hosts.length} collapsed={collapsed} />
-      <NavItem view="snippets" icon="code" label="Snippets" count={ui.snippets.length} collapsed={collapsed} />
-      <NavItem view="keys" icon="key" label="Keychain" count={ui.keys.length} collapsed={collapsed} />
-      <NavItem view="known" icon="shield" label="Known hosts" count={ui.known.length} collapsed={collapsed} />
-      <NavItem view="forwards" icon="route" label="Forwarding" count={ui.hosts.reduce((sum, host) => sum + (host.data.forwards?.length ?? 0), 0)} collapsed={collapsed} />
-      <NavItem view="sync" icon="cloud" label="Sync" collapsed={collapsed} />
+      <NavItem view="hosts" icon="server" label={t("Hosts")} count={ui.hosts.length} collapsed={collapsed} />
+      <NavItem view="snippets" icon="code" label={t("Snippets")} count={ui.snippets.length} collapsed={collapsed} />
+      <NavItem view="keys" icon="key" label={t("Keychain")} count={ui.keys.length} collapsed={collapsed} />
+      <NavItem view="known" icon="shield" label={t("Known hosts")} count={ui.known.length} collapsed={collapsed} />
+      <NavItem view="forwards" icon="route" label={t("Forwarding")} count={ui.hosts.reduce((sum, host) => sum + (host.data.forwards?.length ?? 0), 0)} collapsed={collapsed} />
+      <NavItem view="sync" icon="cloud" label={t("Sync")} collapsed={collapsed} />
       <Column flex={1} />
-      <SideAction icon="search" label="Commands" hint="Ctrl K" collapsed={collapsed} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
-      <SideAction icon="lock" label="Lock vault" collapsed={collapsed} onClick={lockVault} />
-      <SideAction icon={collapsed ? "panelOpen" : "panelClose"} label={collapsed ? "Expand sidebar" : "Collapse sidebar"} collapsed={collapsed} onClick={toggleSidebar} />
+      <SideAction icon="search" label={t("Commands")} hint="Ctrl K" collapsed={collapsed} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
+      <SideAction icon="lock" label={t("Lock vault")} collapsed={collapsed} onClick={lockVault} />
+      <SideAction icon={collapsed ? "panelOpen" : "panelClose"} label={collapsed ? t("Expand sidebar") : t("Collapse sidebar")} collapsed={collapsed} onClick={toggleSidebar} />
     </Column>
   );
 }
@@ -387,20 +391,20 @@ function toggleSidebar(): void {
 
 
 /** The vault's sections as short labels for the bottom bar of a phone. */
-const SECTIONS: { view: View; icon: IconId; label: string }[] = [
-  { view: "hosts", icon: "server", label: "Hosts" },
-  { view: "snippets", icon: "code", label: "Snippets" },
-  { view: "keys", icon: "key", label: "Keys" },
-  { view: "known", icon: "shield", label: "Known" },
-  { view: "forwards", icon: "route", label: "Ports" },
-  { view: "sync", icon: "cloud", label: "Sync" },
+const SECTIONS = (): { view: View; icon: IconId; label: string }[] => [
+  { view: "hosts", icon: "server", label: t("Hosts") },
+  { view: "snippets", icon: "code", label: t("Snippets") },
+  { view: "keys", icon: "key", label: t("Keys") },
+  { view: "known", icon: "shield", label: t("Known") },
+  { view: "forwards", icon: "route", label: t("Ports") },
+  { view: "sync", icon: "cloud", label: t("Sync") },
 ];
 
 /** The sidebar of a narrow screen: the sections along the bottom, within reach of a thumb. */
 function BottomNav() {
   return (
     <Row align="stretch" style={{ height: 58, shrink: 0, padding: { left: 4, right: 4 }, background: color.panel, borderColor: color.line, borderWidth: { top: 1 } }}>
-      {SECTIONS.map(item => {
+      {SECTIONS().map(item => {
         const active = ui.view === item.view;
         return (
           <Pressable
@@ -420,25 +424,48 @@ function BottomNav() {
   );
 }
 
+/** When each session was first seen still connecting: the card waits a moment before it shows. */
+const connectingSince = new Map<number, number>();
+/** One wake-up per waiting session: the overlay renders often, and each render used to add a timer. */
+const overlayTimers = new Set<number>();
+const OVERLAY_DELAY = 450;
+
 function SessionOverlay({ info }: { info: SessionInfo }) {
-  if (info.status === "connected") return null;
+  if (info.status === "connected") {
+    connectingSince.delete(info.session);
+    return null;
+  }
+  // A fast login goes connecting, signing in, connected within a few hundred ms: a card that pops
+  // in and out over the terminal for that reads as a flicker, so it only shows for a slow one.
+  if (info.status === "connecting" || info.status === "authenticating") {
+    const since = connectingSince.get(info.session) ?? Date.now();
+    connectingSince.set(info.session, since);
+    const wait = since + OVERLAY_DELAY - Date.now();
+    if (wait > 0) {
+      if (!overlayTimers.has(info.session)) {
+        overlayTimers.add(info.session);
+        setTimeout(() => { overlayTimers.delete(info.session); refresh(); }, wait + 10);
+      }
+      return null;
+    }
+  } else connectingSince.delete(info.session);
   const host = ui.hosts.find(record => record.id === info.host);
   const closed = info.status === "closed";
   const reconnecting = info.status === "reconnecting";
-  const title = closed ? (info.reason ? "Disconnected" : "Session ended") : reconnecting ? "Link lost, reconnecting" : info.status === "authenticating" ? "Signing in" : "Connecting";
+  const title = closed ? (info.reason ? t("Disconnected") : t("Session ended")) : reconnecting ? t("Link lost, reconnecting") : info.status === "authenticating" ? t("Signing in")  : t("Connecting");
   return (
     <Column align="center" justify="center" style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, background: closed || reconnecting ? "#0d0f12b3" : "transparent" }}>
       <Column gap={12} align="center" style={{ padding: { top: 22, bottom: 22, left: 28, right: 28 }, minWidth: dialogWidth(300), maxWidth: dialogWidth(420), background: color.panel, radius: radius.panel, borderColor: color.line, borderWidth: 1, boxShadow: { y: 14, blur: 40, color: "#00000080" } }}>
         <Text size={15} weight={650} color={color.text}>{title}</Text>
-        {host ? <Text size={12.5} color={color.muted} style={mono}>{`${host.data.user || "root"}@${host.data.address}`}</Text> : null}
+        {host ? <Text size={12.5} color={color.muted} style={mono}>{`${host.data.user || "root"}@${host.data.address}${host.data.port && host.data.port !== 22 ? `:${host.data.port}` : ""}`}</Text> : null}
         {info.reason ? <Text size={12.5} color={reconnecting ? color.muted : color.danger} style={{ textAlign: "center", maxWidth: dialogWidth(360) - 56 }}>{info.reason}</Text> : null}
         {closed ? (
           <Row gap={8} style={{ margin: { top: 4 } }}>
-            <Action label="Close" onClick={() => closePane(info.session)} />
-            {info.host ? <Action tone="primary" icon="refresh" label="Reconnect" onClick={() => reconnect(info.session)} /> : null}
+            <Action label={t("Close")} onClick={() => closePane(info.session)} />
+            {info.host ? <Action tone="primary" icon="refresh" label={t("Reconnect")} onClick={() => reconnect(info.session)} /> : null}
           </Row>
         ) : reconnecting ? (
-          <Action label="Stop" onClick={() => closePane(info.session)} />
+          <Action label={t("Stop")} onClick={() => closePane(info.session)} />
         ) : null}
       </Column>
     </Column>
@@ -452,7 +479,7 @@ function latencyTone(ms: number): string {
 function StatusBar({ info, panes }: { info: SessionInfo; panes: number }) {
   const host = ui.hosts.find(record => record.id === info.host);
   const narrow = compact();
-  const where = host ? `${host.data.user || "root"}@${host.data.address}${host.data.port && host.data.port !== 22 ? `:${host.data.port}` : ""}` : "local shell";
+  const where = host ? `${host.data.user || "root"}@${host.data.address}${host.data.port && host.data.port !== 22 ? `:${host.data.port}` : ""}` : t("local shell");
   return (
     <Row gap={narrow ? 8 : 14} align="center" style={{ height: narrow ? 34 : 28, padding: { left: 4, right: 6 }, background: color.panel, borderColor: color.line, borderWidth: { top: 1 } }}>
       <Pressable
@@ -461,7 +488,7 @@ function StatusBar({ info, panes }: { info: SessionInfo; panes: number }) {
         onDragStart={() => startDrag({ kind: "pane", session: info.session })}
         onDragEnd={finishDrag}
         onClick={() => focusPane(info.session)}
-        control={{ role: "button", label: "Drag to move this terminal" }}
+        control={{ role: "button", label: t("Drag to move this terminal") }}
         style={{ direction: "row", align: "center", gap: 8, height: 22, shrink: 1, minWidth: 0, cursor: "grab", padding: { left: 4, right: 8 }, radius: radius.control, hover: { background: color.hover } }}
       >
         <Glyph name="grip" size={12} color={color.faint} />
@@ -474,7 +501,7 @@ function StatusBar({ info, panes }: { info: SessionInfo; panes: number }) {
       {info.transport === "agent" && !narrow ? (
         <Row gap={5} align="center">
           <Glyph name="shield" size={12} color={color.accent} />
-          <Text size={11.5} color={color.muted}>resumable</Text>
+          <Text size={11.5} color={color.muted}>{t("resumable")}</Text>
         </Row>
       ) : null}
       {info.latency !== undefined && info.host ? (
@@ -491,11 +518,12 @@ function StatusBar({ info, panes }: { info: SessionInfo; panes: number }) {
       ))}
       <Row flex={1} style={{ minWidth: 0 }} />
       {info.size && !narrow ? <Text size={11.5} color={color.faint} style={mono}>{info.size}</Text> : null}
-      {narrow ? null : <IconAction icon="columns" size={24} label="Split right" onClick={() => split("row")} />}
-      {narrow ? null : <IconAction icon="rows" size={24} label="Split down" onClick={() => split("column")} />}
+      {narrow ? null : <IconAction icon="columns" size={24} label={t("Split right")} onClick={() => split("row")} />}
+      {narrow ? null : <IconAction icon="rows" size={24} label={t("Split down")} onClick={() => split("column")} />}
       {info.host && info.transport === "ssh" && !ANDROID ? <AgentChip hostId={info.host} session={info.session} /> : null}
-      {info.host ? <IconAction icon="folder" size={24} label="Open files" onClick={() => openFiles(info.host!)} /> : null}
-      {panes > 1 ? <IconAction icon="x" size={24} label="Close pane" onClick={() => closePane(info.session)} /> : null}
+      {info.host ? <AuditButton hostId={info.host} /> : null}
+      {info.host ? <IconAction icon="folder" size={24} label={t("Open files")} onClick={() => openFiles(info.host!)} /> : null}
+      {panes > 1 ? <IconAction icon="x" size={24} label={t("Close pane")} onClick={() => closePane(info.session)} /> : null}
     </Row>
   );
 }
@@ -505,10 +533,10 @@ function AgentChip({ hostId, session }: { hostId: string; session: number }) {
   const install = ui.agentInstall[hostId];
   const running = install?.state === "checking" || install?.state === "uploading";
   const [icon, tone, label]: [IconId, string, string] =
-    install?.state === "done" ? ["check", color.ok, "Agent ready: reconnect to resume"]
-    : install?.state === "error" ? ["alert", color.danger, `Agent install failed: ${install.message}`]
+    install?.state === "done" ? ["check", color.ok, t("Agent ready: reconnect to resume")]
+    : install?.state === "error" ? ["alert", color.danger, t("Agent install failed: {message}", { message: install.message })]
     : running ? ["refresh", color.accent, install!.message]
-    : ["download", color.accent, "Make this session resumable"];
+    : ["download", color.accent, t("Make this session resumable")];
   return (
     <Pressable
       focusable={false}
@@ -575,18 +603,25 @@ function View({ direction, children }: { direction: "row" | "column"; children: 
 }
 
 function Palette() {
-  const terminal = ui.tabs.find(tab => tab.id === ui.active)?.kind === "terminal";
+  const active = ui.tabs.find(tab => tab.id === ui.active);
+  const terminal = active?.kind === "terminal";
+  // The server of the focused pane comes first: audit it without going back to the hosts.
+  const here = terminal ? ui.hosts.find(host => host.id === ui.sessions[active.focus]?.host) : undefined;
+  const audit = ui.auditSettings.enabled;
   const items: CommandItem[] = [
-    ...ui.hosts.map(host => ({ value: `connect:${host.id}`, label: `Connect to ${host.data.name}`, keywords: [host.data.address, host.data.user ?? "", host.data.group ?? ""], group: "Hosts" })),
-    ...ui.hosts.map(host => ({ value: `files:${host.id}`, label: `Files on ${host.data.name}`, keywords: [host.data.address, "sftp"], group: "Files" })),
-    ...(terminal ? ui.snippets.map(snippet => ({ value: `snippet:${snippet.id}`, label: `Run ${snippet.data.name}`, keywords: [snippet.data.command], group: "Snippets" })) : []),
-    ...(terminal ? ui.snippets.map(snippet => ({ value: `broadcast:${snippet.id}`, label: `Run ${snippet.data.name} in every pane`, keywords: [snippet.data.command, "broadcast"], group: "Snippets" })) : []),
-    { value: "new-host", label: "New host", group: "Actions", shortcut: "Ctrl N" },
-    { value: "local", label: "New local terminal", group: "Actions", shortcut: "Ctrl Shift T" },
-    ...(terminal ? [{ value: "split-right", label: "Split right", group: "Actions", shortcut: "Ctrl Shift D" }, { value: "split-down", label: "Split down", group: "Actions", shortcut: "Ctrl Shift E" }] : []),
-    { value: "sync", label: "Sync now", group: "Actions" },
-    ...(compact() ? [] : [{ value: "sidebar", label: ui.appearance.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar", group: "Actions" }]),
-    { value: "lock", label: "Lock vault", group: "Actions", shortcut: "Ctrl L" },
+    ...(audit && here ? [{ value: `audit-run:${here.id}`, label: t("Run a security audit of {name}", { name: here.data.name }), keywords: ["security", "scan", "vulnerabilities", "cve"], group: t("This server") }] : []),
+    ...(audit && here && ui.audits[here.id] ? [{ value: `audit:${here.id}`, label: t("Security report of {name}", { name: here.data.name }), keywords: ["security", "scan", "vulnerabilities", "cve"], group: t("This server") }] : []),
+    ...ui.hosts.map(host => ({ value: `connect:${host.id}`, label: t("Connect to {name}", { name: host.data.name }), keywords: [host.data.address, host.data.user ?? "", host.data.group ?? ""], group: t("Hosts") })),
+    ...ui.hosts.map(host => ({ value: `files:${host.id}`, label: t("Files on {name}", { name: host.data.name }), keywords: [host.data.address, "sftp"], group: t("Files") })),
+    ...(audit ? ui.hosts.filter(host => host !== here).map(host => ({ value: `audit:${host.id}`, label: t("Security audit of {name}", { name: host.data.name }), keywords: [host.data.address, "security", "scan", "cve"], group: t("Security") })) : []),
+    ...(terminal ? ui.snippets.map(snippet => ({ value: `snippet:${snippet.id}`, label: t("Run {name}", { name: snippet.data.name }), keywords: [snippet.data.command], group: t("Snippets") })) : []),
+    ...(terminal ? ui.snippets.map(snippet => ({ value: `broadcast:${snippet.id}`, label: t("Run {name} in every pane", { name: snippet.data.name }), keywords: [snippet.data.command, "broadcast"], group: t("Snippets") })) : []),
+    { value: "new-host", label: t("New host"), group: t("Actions"), shortcut: "Ctrl N" },
+    { value: "local", label: t("New local terminal"), group: t("Actions"), shortcut: "Ctrl Shift T" },
+    ...(terminal ? [{ value: "split-right", label: t("Split right"), group: t("Actions"), shortcut: "Ctrl Shift D" }, { value: "split-down", label: t("Split down"), group: t("Actions"), shortcut: "Ctrl Shift E" }] : []),
+    { value: "sync", label: t("Sync now"), group: t("Actions") },
+    ...(compact() ? [] : [{ value: "sidebar", label: ui.appearance.sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar"), group: t("Actions") }]),
+    { value: "lock", label: t("Lock vault"), group: t("Actions"), shortcut: "Ctrl L" },
   ];
   // Keyboard shortcuts mean nothing on a phone.
   if (touch()) for (const item of items) delete item.shortcut;
@@ -596,8 +631,8 @@ function Palette() {
       open={ui.paletteOpen}
       query={ui.paletteQuery}
       items={items}
-      placeholder="Connect, open files, run a snippet"
-      emptyText="Nothing found"
+      placeholder={t("Connect, open files, run a snippet")}
+      emptyText={t("Nothing found")}
       width={dialogWidth(540)}
       onOpenChange={open => { ui.paletteOpen = open; }}
       onQueryChange={query => { ui.paletteQuery = query; }}
@@ -606,6 +641,8 @@ function Palette() {
         const [kind, id] = value.split(/:(.*)/s) as [string, string | undefined];
         if (kind === "connect") return connect(id!);
         if (kind === "files") return openFiles(id!);
+        if (kind === "audit") return openAudit(id!);
+        if (kind === "audit-run") { runAudit(id!); return openAudit(id!); }
         if (kind === "snippet") return runSnippet(id!);
         if (kind === "broadcast") return broadcastSnippet(id!);
         if (value === "new-host") { ui.view = "hosts"; activate("home"); return newHost(); }
@@ -626,11 +663,11 @@ function Palette() {
  */
 /** The title bar's right end. A phone has no sidebar, so the palette and the lock move up here. */
 function TitleActions() {
-      const settings = <IconAction icon="settings" label="Settings" focusable={false} color={ui.settingsOpen ? color.accent : color.muted} onClick={() => { ui.settingsOpen = true; }} />;
+      const settings = <IconAction icon="settings" label={t("Settings")} focusable={false} color={ui.settingsOpen ? color.accent : color.muted} onClick={() => { ui.settingsOpen = true; }} />;
       if (!compact()) return <Row gap={2} align="center"><SyncBadge />{settings}</Row>;
       return (
         <Row gap={0} align="center" style={{ shrink: 0 }}>
-          <IconAction icon="search" label="Commands" focusable={false} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
+          <IconAction icon="search" label={t("Commands")} focusable={false} onClick={() => { ui.paletteOpen = true; ui.paletteQuery = ""; }} />
           {settings}
         </Row>
       );
@@ -683,14 +720,14 @@ function FaultDialog() {
     <Modal
       open={fault !== undefined}
       onOpenChange={open => { if (!open) dismissFault(); }}
-      title="Something went wrong"
+      title={t("Something went wrong")}
       width={dialogWidth(520)}
       footer={
         <Row gap={8} justify="end">
-          <Action icon="copy" label="Copy details" onClick={() => {
+          <Action icon="copy" label={t("Copy details")} onClick={() => {
             void clipboard.writeText(`${fault?.message}\n\n${fault?.detail}`).catch(() => { /* nothing to copy into */ });
           }} />
-          <Action tone="primary" label="Close" onClick={dismissFault} />
+          <Action tone="primary" label={t("Close")} onClick={dismissFault} />
         </Row>
       }
     >
@@ -699,7 +736,7 @@ function FaultDialog() {
           <Glyph name="alert" size={18} color={color.danger} />
           <Text size={13.5} color={color.text} style={{ flex: 1, lineHeight: 1.45 }}>{fault?.message ?? ""}</Text>
         </Row>
-        <Text size={12} color={color.muted} style={{ lineHeight: 1.45 }}>Termio kept running; what you were doing may not have finished. Your vault and open sessions are unaffected.</Text>
+        <Text size={12} color={color.muted} style={{ lineHeight: 1.45 }}>{t("Termio kept running; what you were doing may not have finished. Your vault and open sessions are unaffected.")}</Text>
         <Scroll style={{ maxHeight: 180, background: color.canvas, radius: radius.control, borderColor: color.line, borderWidth: 1, padding: 10 }}>
           <Text size={11} color={color.faint} style={{ ...mono, whiteSpace: "pre-wrap" }}>{fault?.detail ?? ""}</Text>
         </Scroll>
@@ -727,6 +764,7 @@ function Shell() {
       </Row>
       {narrow && !tab ? <BottomNav /> : null}
       <Settings />
+      <Audit />
       <TabSwitcher />
       <HostKeyPrompt />
       <Palette />
@@ -753,9 +791,9 @@ function TermSearch() {
         radius: 8,
       }}
     >
-      <TextField id="term-search" value={search.query} onChange={setTermQuery} placeholder="Find" style={{ width: compact() ? 140 : 240, height: 28 }} />
-      <Text size={11} color={color.faint} style={{ whiteSpace: "nowrap" }}>{`${search.count} matches`}</Text>
-      <IconAction icon="x" label="Close search" size={24} onClick={closeTermSearch} />
+      <TextField id="term-search" value={search.query} onChange={setTermQuery} placeholder={t("Find")} style={{ width: compact() ? 140 : 240, height: 28 }} />
+      <Text size={11} color={color.faint} style={{ whiteSpace: "nowrap" }}>{t("{count} matches", { count: search.count })}</Text>
+      <IconAction icon="x" label={t("Close search")} size={24} onClick={closeTermSearch} />
     </Row>
   );
 }

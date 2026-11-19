@@ -1,6 +1,7 @@
 import { Column, openExternal, Row, clipboard } from "@tarve/core";
 import { refresh } from "../state/store";
 import { Action, Hint } from "../ui/kit";
+import { t } from "../i18n";
 
 /** Where an IAM user is created; AWS has no page that takes a ready-made key request, as Cloudflare does. */
 const IAM_NEW_USER = "https://console.aws.amazon.com/iam/home#/users/create";
@@ -33,10 +34,10 @@ export function AwsSetup({ bucket }: { bucket: string }) {
   return (
     <Column gap={8}>
       <Row gap={8}>
-        <Action icon="cloud" label="Open IAM on AWS" onClick={() => openExternal(IAM_NEW_USER)} />
-        <Action icon={copied ? "check" : "copy"} label={copied ? "Policy copied" : "Copy policy"} onClick={() => copyPolicy(bucket)} />
+        <Action icon="cloud" label={t("Open IAM on AWS")} onClick={() => openExternal(IAM_NEW_USER)} />
+        <Action icon={copied ? "check" : "copy"} label={copied ? t("Policy copied") : t("Copy policy")} onClick={() => copyPolicy(bucket)} />
       </Row>
-      <Hint>{`Create the bucket in S3 first. In IAM, create a user, add the copied policy as an inline policy (JSON tab)${bucket.trim() ? `, scoped to ${bucket.trim()}` : ": type the bucket above first, so it names it"}. Then under Security credentials create an access key (Other) and paste it here.`}</Hint>
+      <Hint>{t("Create the bucket in S3 first. In IAM, create a user, add the copied policy as an inline policy (JSON tab){scope}. Then under Security credentials create an access key (Other) and paste it here.", { scope: bucket.trim() ? t(", scoped to {bucket}", { bucket: bucket.trim() }) : t(": type the bucket above first, so it names it") })}</Hint>
     </Column>
   );
 }

@@ -3,6 +3,7 @@ import { generateKey, importKey, removeRecord, toast, ui } from "../state/store"
 import { Glyph } from "../ui/icons";
 import { compact, gutter, Action, Field, Hint, IconAction, Label, Segments, mono, relativeTime } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 /** Closes the new-key form; false when it was not open (Android Back). */
 export function closeNewKey(): boolean {
@@ -15,7 +16,7 @@ export function closeNewKey(): boolean {
 const draft = { mode: "generate" as "generate" | "import", open: false, name: "", privateKey: "", passphrase: "" };
 
 function copy(text: string, what: string): void {
-  clipboard.writeText(text).then(() => toast(`${what} copied`), () => toast("Could not reach the clipboard", "error"));
+  clipboard.writeText(text).then(() => toast(t("{what} copied", { what })), () => toast(t("Could not reach the clipboard"), "error"));
 }
 
 function NewKey() {
@@ -26,14 +27,14 @@ function NewKey() {
   return (
     <Column gap={14} style={{ padding: 18, background: color.panel, radius: radius.panel, borderColor: color.line, borderWidth: 1 }}>
       <Row align="center" justify="between">
-        <Segments value={draft.mode} options={[{ value: "generate", label: "Generate" }, { value: "import", label: "Import" }]} onChange={mode => { draft.mode = mode; ui.error = undefined; }} />
-        <IconAction icon="x" label="Close" onClick={() => { draft.open = false; ui.error = undefined; }} />
+        <Segments value={draft.mode} options={[{ value: "generate", label: t("Generate") }, { value: "import", label: t("Import") }]} onChange={mode => { draft.mode = mode; ui.error = undefined; }} />
+        <IconAction icon="x" label={t("Close")} onClick={() => { draft.open = false; ui.error = undefined; }} />
       </Row>
-      <Field id="key-name" label="Name" value={draft.name} placeholder={draft.mode === "generate" ? "Laptop" : "Work key"} onChange={value => { draft.name = value; }} onSubmit={draft.mode === "generate" ? submit : undefined} />
+      <Field id="key-name" label={t("Name")} value={draft.name} placeholder={draft.mode === "generate" ? t("Laptop") : t("Work key")} onChange={value => { draft.name = value; }} onSubmit={draft.mode === "generate" ? submit : undefined} />
       {draft.mode === "import" ? (
         <Column gap={14}>
           <Column gap={6}>
-            <Label>Private key</Label>
+            <Label>{t("Private key")}</Label>
             <TextArea
               value={draft.privateKey}
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
@@ -41,14 +42,14 @@ function NewKey() {
               style={{ height: 120, background: color.canvas, borderColor: color.line, borderWidth: 1, radius: radius.control, padding: 10, foreground: color.text, fontFamily: "Cascadia Mono", fontSize: 11.5, focus: { borderColor: color.accent } }}
             />
           </Column>
-          <Field label="Passphrase" type="password" value={draft.passphrase} placeholder="Only if the key has one" onChange={value => { draft.passphrase = value; }} />
+          <Field label={t("Passphrase")} type="password" value={draft.passphrase} placeholder={t("Only if the key has one")} onChange={value => { draft.passphrase = value; }} />
         </Column>
       ) : (
-        <Hint>An Ed25519 key: short, fast, and accepted by every current OpenSSH server.</Hint>
+        <Hint>{t("An Ed25519 key: short, fast, and accepted by every current OpenSSH server.")}</Hint>
       )}
       {ui.error ? <Hint tone="danger">{ui.error}</Hint> : null}
       <Row justify="end">
-        <Action tone="primary" label={draft.mode === "generate" ? "Generate key" : "Import key"} onClick={submit} />
+        <Action tone="primary" label={draft.mode === "generate" ? t("Generate key") : t("Import key")} onClick={submit} />
       </Row>
     </Column>
   );
@@ -70,9 +71,9 @@ export function Keychain() {
   return (
     <Scroll flex={1}>
       <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
-        <Header title="Keychain" count={ui.keys.length} action={draft.open ? null : <Action tone="primary" icon="plus" label="New key" onClick={() => { draft.open = true; ui.error = undefined; }} />} />
+        <Header title={t("Keychain")} count={ui.keys.length} action={draft.open ? null : <Action tone="primary" icon="plus" label={t("New key")} onClick={() => { draft.open = true; ui.error = undefined; }} />} />
         <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
-          Private keys stay inside the encrypted vault and are never shown again. Give servers the public half: add it to ~/.ssh/authorized_keys.
+          {t("Private keys stay inside the encrypted vault and are never shown again. Give servers the public half: add it to ~/.ssh/authorized_keys.")}
         </Text>
         {draft.open ? <NewKey /> : null}
         <Column gap={8}>
@@ -89,12 +90,12 @@ export function Keychain() {
                 <Text size={12} color={color.muted} style={{ ...mono, userSelect: "text", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{key.data.fingerprint}</Text>
               </Column>
               {compact()
-                ? <IconAction icon="copy" label="Copy public key" onClick={() => copy(key.data.public, "Public key")} />
-                : <Action icon="copy" label="Copy public key" onClick={() => copy(key.data.public, "Public key")} />}
-              <IconAction icon="trash" label={`Delete ${key.data.name}`} onClick={() => removeRecord(key.id)} />
+                ? <IconAction icon="copy" label={t("Copy public key")} onClick={() => copy(key.data.public, t("Public key"))} />
+                : <Action icon="copy" label={t("Copy public key")} onClick={() => copy(key.data.public, t("Public key"))} />}
+              <IconAction icon="trash" label={t("Delete {name}", { name: key.data.name })} onClick={() => removeRecord(key.id)} />
             </Row>
           ))}
-          {ui.keys.length === 0 && !draft.open ? <Text size={13} color={color.faint}>No keys yet.</Text> : null}
+          {ui.keys.length === 0 && !draft.open ? <Text size={13} color={color.faint}>{t("No keys yet.")}</Text> : null}
         </Column>
       </Column>
     </Scroll>
@@ -105,9 +106,9 @@ export function KnownHosts() {
   return (
     <Scroll flex={1}>
       <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
-        <Header title="Known hosts" count={ui.known.length} />
+        <Header title={t("Known hosts")} count={ui.known.length} />
         <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
-          Server keys you trusted. Termio checks them on every connection and stops if one changes. Forget a key when a server is rebuilt on purpose.
+          {t("Server keys you trusted. Termio checks them on every connection and stops if one changes. Forget a key when a server is rebuilt on purpose.")}
         </Text>
         <Column gap={2} style={{ background: color.panel, radius: radius.panel, borderColor: color.line, borderWidth: 1, padding: 6 }}>
           {ui.known.map(known => (
@@ -118,10 +119,10 @@ export function KnownHosts() {
                 <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{`${known.data.algorithm}  ${known.data.fingerprint}`}</Text>
               </Column>
               {compact() ? null : <Text size={11.5} color={color.faint}>{relativeTime(known.updated)}</Text>}
-              <IconAction icon="trash" label="Forget this key" onClick={() => removeRecord(known.id)} />
+              <IconAction icon="trash" label={t("Forget this key")} onClick={() => removeRecord(known.id)} />
             </Row>
           ))}
-          {ui.known.length === 0 ? <Row style={{ padding: 12 }}><Text size={13} color={color.faint}>None yet: they appear after your first connection.</Text></Row> : null}
+          {ui.known.length === 0 ? <Row style={{ padding: 12 }}><Text size={13} color={color.faint}>{t("None yet: they appear after your first connection.")}</Text></Row> : null}
         </Column>
       </Column>
     </Scroll>

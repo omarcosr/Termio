@@ -2975,6 +2975,7 @@ dependencies = [
  "termio-vault",
  "termio-vt",
  "tokio",
+ "ureq",
  "xsalsa20poly1305",
  "zeroize",
 ]

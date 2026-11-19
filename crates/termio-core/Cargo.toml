@@ -17,5 +17,6 @@ termio-vault = { version = "0.1.0", path = "../termio-vault" }
 termio-sync = { version = "0.1.0", path = "../termio-sync" }
 snap = "1"
 tokio = { version = "1.54.1", features = ["sync"] }
+ureq = "3.5.1"
 xsalsa20poly1305 = "0.9"
 zeroize = "1.9.1"

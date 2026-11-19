@@ -1,6 +1,7 @@
 import { Column, Input, Pressable, Row, Text, viewport, type InputType, type Style } from "@tarve/core";
 import { Glyph, type IconId } from "./icons";
 import { color, font, radius } from "./tokens";
+import { locale, t } from "../i18n";
 
 export const mono: Style = { fontFamily: font.mono };
 
@@ -84,16 +85,16 @@ export function Field(props: {
 }
 
 export function TextField(props: { id?: string; value: string; onChange: (value: string) => void; onSubmit?: (value: string) => void; placeholder?: string; type?: InputType; style?: Style; autoFocus?: boolean }) {
-  return <Input id={props.id} autoFocus={props.autoFocus} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle(), ...props.style }} />;
+  return <Input id={props.id} autoFocus={props.autoFocus} type={props.type} value={props.value} placeholder={props.placeholder} onChange={props.onChange} onSubmit={value => props.onSubmit?.(value)} style={{ ...inputStyle(), minWidth: 0, ...props.style }} />;
 }
 
 type Tone = "primary" | "quiet" | "danger";
 
 // A function, not a constant: the palette changes with the colour scheme.
 const buttonTones = (): Record<Tone, Style> => ({
-  primary: { background: color.accent, foreground: color.accentInk, hover: { background: color.accentHover } },
-  quiet: { background: color.raised, foreground: color.text, borderColor: color.line, borderWidth: 1, hover: { background: color.hover, borderColor: color.lineStrong } },
-  danger: { background: "transparent", foreground: color.danger, borderColor: color.line, borderWidth: 1, hover: { background: color.dangerSoft, borderColor: color.danger } },
+  primary: { background: color.accent, foreground: color.accentInk, hover: { background: color.accentHover }, active: { background: color.accentHover, opacity: 0.85, transform: "scale(0.97)" } },
+  quiet: { background: color.raised, foreground: color.text, borderColor: color.line, borderWidth: 1, hover: { background: color.hover, borderColor: color.lineStrong }, active: { background: color.hover, borderColor: color.lineStrong, opacity: 0.8, transform: "scale(0.97)" } },
+  danger: { background: "transparent", foreground: color.danger, borderColor: color.line, borderWidth: 1, hover: { background: color.dangerSoft, borderColor: color.danger }, active: { background: color.dangerSoft, borderColor: color.danger, opacity: 0.8, transform: "scale(0.97)" } },
 });
 
 /** `busy`: the action is running — a spinner replaces the icon and further clicks are ignored. */
@@ -142,6 +143,8 @@ export function IconAction(props: { icon: IconId; label: string; onClick: () => 
         justify: "center",
         cursor: "pointer",
         hover: { background: color.hover },
+        active: { background: color.lineStrong, transform: "scale(0.92)" },
+        transition: { all: { duration: 100, easing: "easeOut" } },
         focusVisible: { outlineWidth: 2, outlineColor: color.accent },
       }}
     >
@@ -170,6 +173,7 @@ export function Segments<T extends string>(props: { value: T; options: readonly 
               cursor: active ? "default" : "pointer",
               background: active ? color.raised : "transparent",
               hover: { background: active ? color.raised : color.hover },
+              active: active ? undefined : { background: color.lineStrong },
             }}
           >
             <Text size={12} weight={600} color={active ? color.text : color.muted}>{option.label}</Text>
@@ -185,13 +189,13 @@ export function Divider() {
 }
 
 export function relativeTime(at?: number): string {
-  if (!at) return "never";
+  if (!at) return t("never");
   const seconds = Math.round((Date.now() - at) / 1000);
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return t("just now");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return t("{count} min ago", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
+  if (hours < 24) return t("{count} h ago", { count: hours });
   const days = Math.round(hours / 24);
-  return days < 30 ? `${days} d ago` : new Date(at).toLocaleDateString();
+  return days < 30 ? t("{count} d ago", { count: days }) : new Date(at).toLocaleDateString(locale());
 }

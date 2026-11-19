@@ -43,6 +43,8 @@ struct State {
 pub struct Session {
     state: Mutex<State>,
     changed: Notify,
+    /// Wakes every waiter once the shell has exited (`changed` wakes only the frame loop).
+    ended: Notify,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -86,6 +88,7 @@ impl Session {
         let session = Arc::new(Self {
             state: Mutex::new(State { vt: Vt::new(columns as usize, lines as usize, Theme::default(), 2000), title: None, dirty: true, exited: None, input_seq: 0 }),
             changed: Notify::new(),
+            ended: Notify::new(),
             writer: Mutex::new(writer),
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
@@ -105,6 +108,7 @@ impl Session {
             let code = child.wait().ok().map(|status| status.exit_code());
             watch.state().exited = Some(code);
             watch.changed.notify_one();
+            watch.ended.notify_waiters();
         })?;
         Ok(session)
     }
@@ -369,12 +373,17 @@ async fn last_word(mut send: quinn::SendStream, connection: &quinn::Connection) 
     connection.close(0u32.into(), b"bye");
 }
 
+/// Waits for the shell to exit without polling: the waiter registers before it checks, so an
+/// exit between the check and the await still wakes it.
 async fn wait_exit(session: &Session) {
     loop {
+        let ended = session.ended.notified();
+        tokio::pin!(ended);
+        ended.as_mut().enable();
         if session.exited().is_some() {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        ended.await;
     }
 }
 

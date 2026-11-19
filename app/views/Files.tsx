@@ -3,6 +3,7 @@ import { browse, dialogs, refresh, download, joinPath, makeDirectory, removeEntr
 import { Glyph } from "../ui/icons";
 import { compact, Action, IconAction, TextField, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
+import { locale, t } from "../i18n";
 
 const drafts = new Map<number, { newFolder?: string; renaming?: { entry: string; name: string }; selected?: string; path?: string }>();
 
@@ -28,7 +29,7 @@ function when(seconds: number): string {
   if (!seconds) return "";
   const date = new Date(seconds * 1000);
   const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString(undefined, sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" }) + (sameYear ? ` ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}` : "");
+  return date.toLocaleDateString(locale(), sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" }) + (sameYear ? ` ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}` : "");
 }
 
 async function pickDownload(files: FilesInfo, entry: RemoteEntry) {
@@ -90,7 +91,7 @@ function PathBar({ files }: { files: FilesInfo }) {
       flex={1}
       focusable
       onClick={() => editPath(files)}
-      control={{ role: "button", label: `Path ${files.path}. Edit` }}
+      control={{ role: "button", label: t("Path {path}. Edit", { path: files.path }) }}
       style={{ direction: "row", align: "center", minWidth: 0, height: 32, padding: { left: 10, right: 10 }, radius: radius.control, borderColor: "transparent", borderWidth: 1, hover: { background: color.hover, borderColor: color.line } }}
     >
       <Crumbs files={files} />
@@ -146,9 +147,9 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
       {compact() ? null : <Text size={12} color={color.faint} style={{ width: 130, textAlign: "end" }}>{when(entry.modified)}</Text>}
       {/* A phone shows the actions of the selected row only, where the size column was. */}
       <Row gap={2} style={compact() ? { display: selected ? "flex" : "none", shrink: 0 } : { width: 96, justify: "end", opacity: selected ? 1 : 0.0 }}>
-        {entry.directory ? null : <IconAction icon="download" label={`Download ${entry.name}`} onClick={() => pickDownload(files, entry)} />}
-        <IconAction icon="pencil" label={`Rename ${entry.name}`} onClick={() => { state.renaming = { entry: entry.name, name: entry.name }; }} />
-        <IconAction icon="trash" label={`Delete ${entry.name}`} onClick={() => removeEntry(files, entry)} />
+        {entry.directory ? null : <IconAction icon="download" label={t("Download {name}", { name: entry.name })} onClick={() => pickDownload(files, entry)} />}
+        <IconAction icon="pencil" label={t("Rename {name}", { name: entry.name })} onClick={() => { state.renaming = { entry: entry.name, name: entry.name }; }} />
+        <IconAction icon="trash" label={t("Delete {name}", { name: entry.name })} onClick={() => removeEntry(files, entry)} />
       </Row>
     </Pressable>
   );
@@ -178,7 +179,7 @@ export function Files({ files }: { files: FilesInfo }) {
   if (files.state !== "ready") {
     return (
       <Column flex={1} align="center" justify="center" gap={10}>
-        <Text size={15} weight={650} color={color.text}>{files.state === "error" ? "Could not open files" : `Opening files on ${host?.data.name ?? "host"}…`}</Text>
+        <Text size={15} weight={650} color={color.text}>{files.state === "error" ? t("Could not open files") : t("Opening files on {name}…", { name: host?.data.name ?? t("host") })}</Text>
         {files.message ? <Text size={12.5} color={color.danger} style={{ maxWidth: 420, textAlign: "center" }}>{files.message}</Text> : null}
       </Column>
     );
@@ -189,34 +190,34 @@ export function Files({ files }: { files: FilesInfo }) {
       <Row flex={1} align="stretch" style={{ minHeight: 0 }}>
       <Column flex={1} style={{ minWidth: 0 }}>
         <Row gap={narrow ? 4 : 8} align="center" style={{ height: 52, padding: { left: narrow ? 8 : 16, right: narrow ? 8 : 16 }, borderColor: color.line, borderWidth: { bottom: 1 } }}>
-          <IconAction icon="up" label="Up one folder" onClick={() => browse(files, joinPath(files.path, ".."))} />
+          <IconAction icon="up" label={t("Up one folder")} onClick={() => browse(files, joinPath(files.path, ".."))} />
           <PathBar files={files} />
-          <IconAction icon="refresh" label="Refresh" onClick={() => browse(files, files.path)} />
-          {narrow ? <IconAction icon="folderPlus" label="New folder" onClick={() => { state.newFolder = ""; }} /> : <Action icon="folderPlus" label="New folder" onClick={() => { state.newFolder = ""; }} />}
-          {narrow ? <IconAction icon="upload" label="Upload" color={color.accent} onClick={() => pickUpload(files)} /> : <Action tone="primary" icon="upload" label="Upload" onClick={() => pickUpload(files)} />}
+          <IconAction icon="refresh" label={t("Refresh")} onClick={() => browse(files, files.path)} />
+          {narrow ? <IconAction icon="folderPlus" label={t("New folder")} onClick={() => { state.newFolder = ""; }} /> : <Action icon="folderPlus" label={t("New folder")} onClick={() => { state.newFolder = ""; }} />}
+          {narrow ? <IconAction icon="upload" label={t("Upload")} color={color.accent} onClick={() => pickUpload(files)} /> : <Action tone="primary" icon="upload" label={t("Upload")} onClick={() => pickUpload(files)} />}
         </Row>
         {state.newFolder !== undefined ? (
           <Row gap={8} align="center" style={{ padding: { left: 16, right: 16, top: 10, bottom: 10 }, borderColor: color.line, borderWidth: { bottom: 1 } }}>
             <Glyph name="folder" size={15} color={color.accent} />
             <TextField
               value={state.newFolder}
-              placeholder="Folder name"
+              placeholder={t("Folder name")}
               onChange={value => { state.newFolder = value; }}
               onSubmit={value => { state.newFolder = undefined; if (value.trim()) void makeDirectory(files, value.trim()); }}
               style={{ flex: 1 }}
             />
-            <IconAction icon="x" label="Cancel" onClick={() => { state.newFolder = undefined; }} />
+            <IconAction icon="x" label={t("Cancel")} onClick={() => { state.newFolder = undefined; }} />
           </Row>
         ) : null}
         <Row gap={12} style={{ padding: { left: 30, right: narrow ? 14 : 108, top: 10, bottom: 6 } }}>
-          <Text size={11.5} weight={650} color={color.faint} style={{ flex: 1 }}>Name</Text>
-          <Text size={11.5} weight={650} color={color.faint} style={{ width: 80, textAlign: "end" }}>Size</Text>
-          {narrow ? null : <Text size={11.5} weight={650} color={color.faint} style={{ width: 130, textAlign: "end" }}>Modified</Text>}
+          <Text size={11.5} weight={650} color={color.faint} style={{ flex: 1 }}>{t("Name")}</Text>
+          <Text size={11.5} weight={650} color={color.faint} style={{ width: 80, textAlign: "end" }}>{t("Size")}</Text>
+          {narrow ? null : <Text size={11.5} weight={650} color={color.faint} style={{ width: 130, textAlign: "end" }}>{t("Modified")}</Text>}
         </Row>
         <Scroll flex={1}>
           <Column gap={1} style={{ padding: { left: 8, right: 8, bottom: 16 }, opacity: files.loading ? 0.6 : 1 }}>
             {files.entries.map(entry => <EntryRow key={entry.name} files={files} entry={entry} />)}
-            {files.entries.length === 0 && !files.loading ? <Row style={{ padding: 16 }}><Text size={13} color={color.faint}>This folder is empty.</Text></Row> : null}
+            {files.entries.length === 0 && !files.loading ? <Row style={{ padding: 16 }}><Text size={13} color={color.faint}>{t("This folder is empty.")}</Text></Row> : null}
           </Column>
         </Scroll>
       </Column>
@@ -233,7 +234,7 @@ function Transfers({ files, narrow }: { files: FilesInfo; narrow: boolean }) {
     <Column style={narrow
       ? { height: 180, shrink: 0, overflow: "hidden", padding: 12, background: color.panel, borderColor: color.line, borderWidth: { top: 1 } }
       : { width: 280, shrink: 1, minWidth: 200, overflow: "hidden", padding: 16, background: color.panel, borderColor: color.line, borderWidth: { left: 1 } }}>
-      <Text size={13} weight={650} color={color.text}>Transfers</Text>
+      <Text size={13} weight={650} color={color.text}>{t("Transfers")}</Text>
       <Scroll flex={1}>
         <Column>{files.transfers.map(transfer => <TransferRow key={transfer.request} transfer={transfer} />)}</Column>
       </Scroll>

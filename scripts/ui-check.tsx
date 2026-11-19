@@ -130,7 +130,48 @@ try {
   ui.view = "hosts";
   ui.settingsOpen = true;
   await shot("settings", true);
+  const { openSettingsPage } = await import("../app/views/Settings");
+  openSettingsPage("security");
+  await shot("settings-security-off", true);
+  store.saveAuditSettings({ enabled: true, cve: true });
+  await shot("settings-security", true);
   ui.settingsOpen = false;
+  // A report as the core sends it, then the same host while it runs again.
+  const audited = ui.hosts.find(host => host.data.name === "Postgres primary")!.id;
+  const finding = (severity: string, category: string, title: string, evidence = "", fix = "", source = "rule") => ({ id: `${category}.${title}`, category, source, severity, title, detail: "Why it matters, in a sentence or two.", evidence, fix });
+  ui.audits[audited] = {
+    host: audited, started: Date.now() - 41_000, finished: Date.now() - 1_000, score: 47,
+    counts: { critical: 1, high: 2, medium: 2, low: 1, info: 1 },
+    facts: { host: "db-1", user: "deploy", root: true, sudo: true, os: "Ubuntu 22.04.4 LTS", kernel: "5.15.0-91-generic", arch: "x86_64", virtualization: "kvm", packages: 712, manager: "dpkg" },
+    categories: ["system", "packages", "ssh", "network"], options: { sudo: true, cve: true, probe: false },
+    cve: { status: "done", ecosystem: "Ubuntu:22.04:LTS", packages: 488, affected: 12, vulnerabilities: 57, vendor: 0 },
+    findings: [
+      finding("critical", "accounts", "toor has user id 0 (root)", "toor", "Remove the account or give it its own id."),
+      finding("high", "network", "Redis listens on 0.0.0.0:6379, reachable from this device", "tcp 0.0.0.0:6379 redis-server", "Bind it to 127.0.0.1."),
+      finding("high", "cve", "openssl 3.0.2-0ubuntu1.10: 8 known vulnerabilities", "high     CVE-2024-5535 (UBUNTU-CVE-2024-5535) — SSL_select_next_proto buffer overread [fixed in 3.0.2-0ubuntu1.17]", "Upgrade openssl to 3.0.2-0ubuntu1.17 or later: sudo apt-get update && sudo apt-get upgrade", "osv"),
+      finding("medium", "ssh", "Password logins are allowed", "passwordauthentication yes   # sshd -T", "Set PasswordAuthentication no"),
+      finding("medium", "system", "A reboot is pending", "required\nlinux-image-5.15.0-94-generic", "Plan a restart: sudo reboot"),
+      finding("low", "system", "Every user can read the kernel log", "kernel.dmesg_restrict = 0"),
+      finding("info", "network", "4 services listen on the network, 3 only on this machine", "tcp 0.0.0.0:22 sshd\ntcp 0.0.0.0:6379 redis-server"),
+    ] as never,
+  };
+  store.openAudit(audited);
+  test.app.update();
+  const { expandForTest } = await import("../app/views/Audit");
+  expandForTest("network.Redis listens on 0.0.0.0:6379, reachable from this device");
+  await shot("audit-report", true);
+  const report = ui.audits[audited]!;
+  ui.auditRuns[audited] = { state: "running", step: "Checking files…", at: Date.now() };
+  delete ui.audits[audited];
+  await shot("audit-running", true);
+  delete ui.auditRuns[audited];
+  await shot("audit-intro", true);
+  ui.auditOpen = undefined;
+  ui.audits[audited] = report;
+  await shot("hosts-audit");
+  store.editHost(audited);
+  await shot("host-editor-audit", true);
+  ui.editing = undefined;
   ui.view = "hosts";
 
   ui.paletteOpen = true;
@@ -149,6 +190,16 @@ try {
   store.openLocal();
   await sleep(2500);
   await shot("terminal");
+  // The same pane as if it were an SSH session to an audited host: the status bar's badge, then the palette's audit commands.
+  const pane = store.activeTab()!.focus;
+  ui.sessions[pane]!.host = audited;
+  await shot("terminal-audit");
+  ui.paletteOpen = true;
+  ui.paletteQuery = "security";
+  await shot("palette-audit", true);
+  ui.paletteOpen = false;
+  ui.paletteQuery = "";
+  ui.sessions[pane]!.host = undefined;
   if (process.env.TERMIO_TOUCH === "1") {
     // A long press on a word: handles at its ends and the action bar.
     const { selectForTest } = await import("../app/views/TerminalPane");

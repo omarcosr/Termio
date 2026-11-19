@@ -665,6 +665,7 @@ pub fn call(operation: &str, request: &Value) -> Option<Result<Value, String>> {
         })
         .inspect(|_| sync_in_background()),
         "agent.install" => text(request, "host").and_then(|host| install_agent(host.to_owned())),
+        "audit.run" => text(request, "host").and_then(|host| run_audit(host.to_owned())),
         sftp if sftp.starts_with("sftp.") => sftp_call(sftp, request),
         _ => return None,
     })
@@ -791,6 +792,47 @@ fn install_agent(host: String) -> Result<Value, String> {
             Ok(version) => step("done", if version.is_empty() { "Agent installed".into() } else { format!("Installed {version}") }),
             Err(error) => step("error", error),
         }
+    });
+    Ok(json!({}))
+}
+
+/// Audits a host with nothing installed on it (see [`crate::audit`]), as the `audit` settings
+/// record allows. Progress and the report arrive as `audit` events; the last report of each host
+/// stays in the vault as `audit:<host>`.
+fn run_audit(host: String) -> Result<Value, String> {
+    let (target, settings) = with_vault(|vault| Ok((target_from(vault, &host, 0)?, vault.get("audit").map(|record| record.data.clone()).unwrap_or(Value::Null))))?;
+    let options = crate::audit::Options::from_settings(&settings)?;
+    let script = crate::audit::script(&options);
+    runtime().spawn(async move {
+        let emit = {
+            let host = host.clone();
+            move |state: &str, step: &str| events::emit(json!({ "type": "audit", "host": host, "state": state, "step": step }))
+        };
+        emit("running", "Connecting…");
+        let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64);
+        let started = now();
+        let verifier: Arc<dyn Verifier> = Arc::new(VaultVerifier { session: 0 });
+        let progress = emit.clone();
+        let output = termio_transport::ssh::exec_script(&target, verifier, "sh -s", &script, std::time::Duration::from_secs(900), move |section| progress("running", &crate::audit::step(section))).await;
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => return emit("error", &error),
+        };
+        // A host behind a jump host is not reachable from here: no port probing.
+        let address = target.jump.is_none().then(|| target.host.clone());
+        let progress = emit.clone();
+        let analysis = tokio::task::spawn_blocking(move || crate::audit::analyze(&output, &options, address.as_deref(), &|step| progress("running", step))).await;
+        let mut report = match analysis {
+            Ok(report) => report,
+            Err(error) => return emit("error", &format!("the analysis failed: {error}")),
+        };
+        report["host"] = json!(host);
+        report["started"] = json!(started);
+        report["finished"] = json!(now());
+        if with_vault(|vault| vault.put("audit", Some(&format!("audit:{host}")), report.clone()).map_err(|error| error.to_string())).is_ok() {
+            sync_in_background();
+        }
+        events::emit(json!({ "type": "audit", "host": host, "state": "done", "step": "", "report": report }));
     });
     Ok(json!({}))
 }

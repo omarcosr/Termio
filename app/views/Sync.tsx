@@ -5,6 +5,7 @@ import { CloudflareConnect, cf } from "./Cloudflare";
 import { Glyph } from "../ui/icons";
 import { gutter, Action, Field, Hint, mono, relativeTime, Segments } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 const r2 = { account: "", bucket: "", accessKey: "", secretKey: "", seeded: false };
 const s3 = { bucket: "", region: "", accessKey: "", secretKey: "", seeded: false };
@@ -25,18 +26,18 @@ function where(target: SyncSettings): string {
 function Status() {
   const { state, message, at } = ui.sync;
   const [tone, text] =
-    state === "running" ? [color.accent, "Syncing…"]
-    : state === "error" ? [color.danger, message ?? "The last sync failed"]
-    : [color.ok, `Up to date · ${relativeTime(at)}`];
+    state === "running" ? [color.accent, t("Syncing…")]
+    : state === "error" ? [color.danger, message ?? t("The last sync failed")]
+    : [color.ok, t("Up to date · {when}", { when: relativeTime(at) })];
   const count = Object.keys(ui.syncTargets).length;
   return (
     <Row gap={12} align="center" style={{ padding: 16, background: color.panel, radius: radius.panel, borderColor: color.line, borderWidth: 1 }}>
       <Row style={{ width: 8, height: 8, radius: 4, background: tone }} />
       <Column flex={1} gap={3} style={{ minWidth: 0 }}>
         <Text size={13.5} weight={600} color={color.text}>{text}</Text>
-        <Text size={12} color={color.faint}>{count > 1 ? "Every bucket holds the whole vault: each is a backup of the other." : "Connect a second provider below to keep a backup."}</Text>
+        <Text size={12} color={color.faint}>{count > 1 ? t("Every bucket holds the whole vault: each is a backup of the other.") : t("Connect a second provider below to keep a backup.")}</Text>
       </Column>
-      <Action icon="refresh" label="Sync now" onClick={syncNow} disabled={state === "running"} />
+      <Action icon="refresh" label={t("Sync now")} onClick={syncNow} disabled={state === "running"} />
     </Row>
   );
 }
@@ -51,10 +52,10 @@ function Provider(props: { provider: SyncProvider; children: unknown }) {
         <Glyph name="cloud" size={16} color={target ? color.ok : color.muted} />
         <Column flex={1} gap={3} style={{ minWidth: 0 }}>
           <Text size={14} weight={650} color={color.text}>{providerName(props.provider)}</Text>
-          <Text size={12} color={color.faint} style={target ? mono : {}}>{target ? where(target) : "Not connected"}</Text>
+          <Text size={12} color={color.faint} style={target ? mono : {}}>{target ? where(target) : t("Not connected")}</Text>
         </Column>
-        {target ? <Action label={editing[props.provider] ? "Cancel" : "Change"} onClick={() => { editing[props.provider] = !editing[props.provider]; }} /> : null}
-        {target ? <Action tone="danger" label="Remove" onClick={() => { editing[props.provider] = false; disableSync(props.provider); }} /> : null}
+        {target ? <Action label={editing[props.provider] ? t("Cancel") : t("Change")} onClick={() => { editing[props.provider] = !editing[props.provider]; }} /> : null}
+        {target ? <Action tone="danger" label={t("Remove")} onClick={() => { editing[props.provider] = false; disableSync(props.provider); }} /> : null}
       </Row>
       {open ? (props.children as never) : null}
     </Column>
@@ -66,20 +67,20 @@ function R2Form() {
   const done = () => { editing.r2 = false; };
   return (
     <Column gap={14}>
-      <Segments value={cf.mode} options={[{ value: "cloudflare", label: "Sign in with a token" }, { value: "manual", label: "Access keys" }] as const} onChange={mode => { cf.mode = mode; }} />
+      <Segments value={cf.mode} options={[{ value: "cloudflare", label: t("Sign in with a token") }, { value: "manual", label: t("Access keys") }] as const} onChange={mode => { cf.mode = mode; }} />
       {cf.mode === "cloudflare" ? <CloudflareConnect onPick={form => { if (configureSync({ ...form, provider: "r2" })) done(); }} selected={target?.bucket} askName /> : (
         <Column gap={14}>
-          <Field label="Cloudflare account ID" value={r2.account} placeholder="32-character account ID" monospace onChange={value => { r2.account = value; }} />
-          <Field label="Bucket" value={r2.bucket} placeholder="termio-vault" monospace onChange={value => { r2.bucket = value; }} />
+          <Field label={t("Cloudflare account ID")} value={r2.account} placeholder={t("32-character account ID")} monospace onChange={value => { r2.account = value; }} />
+          <Field label={t("Bucket")} value={r2.bucket} placeholder="termio-vault" monospace onChange={value => { r2.bucket = value; }} />
           <Row gap={10}>
-            <Field label="Access key ID" value={r2.accessKey} monospace grow={1} onChange={value => { r2.accessKey = value; }} />
-            <Field label="Secret access key" type="password" value={r2.secretKey} grow={1} placeholder={target?.hasSecretKey ? "Saved. Type to replace it" : ""} onChange={value => { r2.secretKey = value; }} />
+            <Field label={t("Access key ID")} value={r2.accessKey} monospace grow={1} onChange={value => { r2.accessKey = value; }} />
+            <Field label={t("Secret access key")} type="password" value={r2.secretKey} grow={1} placeholder={target?.hasSecretKey ? t("Saved. Type to replace it") : ""} onChange={value => { r2.secretKey = value; }} />
           </Row>
-          <Hint>Create an R2 API token with Object Read & Write on this bucket only.</Hint>
+          <Hint>{t("Create an R2 API token with Object Read & Write on this bucket only.")}</Hint>
           <Row gap={8} justify="end">
             <Action
               tone="primary"
-              label={ui.busy ? "Checking…" : target ? "Save and sync" : "Connect R2"}
+              label={ui.busy ? t("Checking…") : target ? t("Save and sync") : t("Connect {provider}", { provider: "R2" })}
               disabled={ui.busy || !r2.account || !r2.bucket || !r2.accessKey || (!r2.secretKey && !target?.hasSecretKey)}
               onClick={() => { if (configureSync({ provider: "r2", account: r2.account, bucket: r2.bucket, accessKey: r2.accessKey, secretKey: r2.secretKey, name: target?.name ?? ui.syncTargets.s3?.name })) done(); }}
             />
@@ -95,18 +96,18 @@ function S3Form() {
   return (
     <Column gap={14}>
       <Row gap={10}>
-        <Field label="Bucket" value={s3.bucket} placeholder="my-termio-vault" monospace grow={1} onChange={value => { s3.bucket = value; }} />
-        <Field label="Region" value={s3.region} placeholder="Detected" monospace grow={1} onChange={value => { s3.region = value; }} />
+        <Field label={t("Bucket")} value={s3.bucket} placeholder="my-termio-vault" monospace grow={1} onChange={value => { s3.bucket = value; }} />
+        <Field label={t("Region")} value={s3.region} placeholder={t("Detected")} monospace grow={1} onChange={value => { s3.region = value; }} />
       </Row>
       <Row gap={10}>
-        <Field label="Access key ID" value={s3.accessKey} placeholder="AKIA…" monospace grow={1} onChange={value => { s3.accessKey = value; }} />
-        <Field label="Secret access key" type="password" value={s3.secretKey} grow={1} placeholder={target?.hasSecretKey ? "Saved. Type to replace it" : ""} onChange={value => { s3.secretKey = value; }} />
+        <Field label={t("Access key ID")} value={s3.accessKey} placeholder="AKIA…" monospace grow={1} onChange={value => { s3.accessKey = value; }} />
+        <Field label={t("Secret access key")} type="password" value={s3.secretKey} grow={1} placeholder={target?.hasSecretKey ? t("Saved. Type to replace it") : ""} onChange={value => { s3.secretKey = value; }} />
       </Row>
       <AwsSetup bucket={s3.bucket} />
       <Row gap={8} justify="end">
         <Action
           tone="primary"
-          label={ui.busy ? "Checking…" : target ? "Save and sync" : "Connect S3"}
+          label={ui.busy ? t("Checking…") : target ? t("Save and sync") : t("Connect {provider}", { provider: "S3" })}
           disabled={ui.busy || !s3.bucket.trim() || !s3.accessKey.trim() || (!s3.secretKey && !target?.hasSecretKey)}
           // The same vault object in every bucket: S3 takes the name the R2 bucket already uses.
           onClick={() => { if (configureSync({ provider: "s3", bucket: s3.bucket, region: s3.region || undefined, accessKey: s3.accessKey, secretKey: s3.secretKey, name: target?.name ?? ui.syncTargets.r2?.name })) editing.s3 = false; }}
@@ -121,16 +122,16 @@ export function Sync() {
   return (
     <Scroll flex={1}>
       <Column gap={18} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
-        <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>Sync</Text>
+        <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>{t("Sync")}</Text>
         <Text size={13} color={color.muted} style={{ lineHeight: 1.5 }}>
-          Keep this vault the same on every device through your own buckets: Cloudflare R2, AWS S3, or both. Each bucket holds the whole vault, so one is a backup of the other. Everything is encrypted here with your vault key before upload: the buckets store opaque blobs and never see a host, password or key.
+          {t("Keep this vault the same on every device through your own buckets: Cloudflare R2, AWS S3, or both. Each bucket holds the whole vault, so one is a backup of the other. Everything is encrypted here with your vault key before upload: the buckets store opaque blobs and never see a host, password or key.")}
         </Text>
         {ui.sync.configured ? <Status /> : null}
         <Provider provider="r2"><R2Form /></Provider>
         <Provider provider="s3"><S3Form /></Provider>
         {ui.error ? <Hint tone="danger">{ui.error}</Hint> : null}
         <Text size={12} color={color.faint} style={{ lineHeight: 1.5 }}>
-          On another device, choose "Join a synced vault" when it asks for a vault, with either bucket and the same master password: the other bucket comes along.
+          {t("On another device, choose \"Join a synced vault\" when it asks for a vault, with either bucket and the same master password: the other bucket comes along.")}
         </Text>
       </Column>
     </Scroll>

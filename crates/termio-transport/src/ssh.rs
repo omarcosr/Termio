@@ -193,14 +193,40 @@ async fn agent_sign_in(handle: &mut Handle<Client>, user: &str) -> Result<bool, 
     Ok(false)
 }
 
+/// Opens the TCP connection with a short timeout per try, a few tries over every address. Some
+/// paths (a NAT or load balancer that hashes the source port onto a dead backend, a firewall
+/// that drops some SYNs) lose one connection attempt, SYN retransmits included, while a new
+/// attempt from another source port gets through: waiting out the OS's ~21 s once would fail.
+async fn dial(host: &str, port: u16) -> io::Result<tokio::net::TcpStream> {
+    const TRIES: usize = 4;
+    const TRY_FOR: Duration = Duration::from_secs(5);
+    let addresses: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
+    let mut last = io::Error::new(io::ErrorKind::NotFound, "the address resolved to nothing");
+    for _ in 0..TRIES {
+        for address in &addresses {
+            match tokio::time::timeout(TRY_FOR, tokio::net::TcpStream::connect(address)).await {
+                Ok(Ok(stream)) => {
+                    let _ = stream.set_nodelay(true);
+                    return Ok(stream);
+                }
+                // Refused or unreachable is an answer: another try would get the same one.
+                Ok(Err(error)) if error.kind() != io::ErrorKind::TimedOut => return Err(error),
+                Ok(Err(error)) => last = error,
+                Err(_) => last = io::Error::new(io::ErrorKind::TimedOut, format!("no answer after {TRIES} tries of {} s", TRY_FOR.as_secs())),
+            }
+        }
+    }
+    Err(last)
+}
+
 /// Connects to `target`, through its jump host if it has one. Returns the session handle and
 /// the jump connections, which must stay alive as long as it does.
 async fn connect(target: &Target, verifier: Arc<dyn Verifier>, sink: &dyn Sink) -> Result<(Handle<Client>, Vec<Handle<Client>>), String> {
     let client = Client { verifier: verifier.clone(), host: target.host.clone(), port: target.port };
     let (mut handle, hops) = match &target.jump {
         None => {
-            let address = (target.host.as_str(), target.port);
-            let handle = client::connect(config(), address, client).await.map_err(|error| fail(&format!("connect to {}:{}", target.host, target.port), error))?;
+            let stream = dial(&target.host, target.port).await.map_err(|error| fail(&format!("connect to {}:{}", target.host, target.port), error))?;
+            let handle = client::connect_stream(config(), stream, client).await.map_err(|error| fail(&format!("connect to {}:{}", target.host, target.port), error))?;
             (handle, Vec::new())
         }
         Some(jump) => {
@@ -430,6 +456,43 @@ pub async fn exec_until(target: &Target, verifier: Arc<dyn Verifier>, command: &
     let _ = tokio::time::timeout(Duration::from_secs(20), collect).await;
     let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
     Ok(String::from_utf8_lossy(&output).into_owned())
+}
+
+/// Feeds `input` to `command` on the server (a script for `sh -s`) and returns all it printed
+/// once it ends, or what came so far when `limit` passes, followed by an `@@timeout` line. Each
+/// output line that starts with `@@` goes to `section` as it arrives, for progress.
+pub async fn exec_script(target: &Target, verifier: Arc<dyn Verifier>, command: &str, input: &str, limit: Duration, section: impl Fn(&str) + Send) -> Result<String, String> {
+    let (handle, _hops) = connect(target, verifier, &Quiet).await?;
+    let mut channel = handle.channel_open_session().await.map_err(|error| fail("open a channel", error))?;
+    channel.exec(true, command).await.map_err(|error| fail("run the command", error))?;
+    channel.data(input.as_bytes()).await.map_err(|error| fail("send the script", error))?;
+    let _ = channel.eof().await;
+    let mut output = Vec::new();
+    let mut seen = 0;
+    let collect = async {
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    output.extend_from_slice(&data);
+                    while let Some(end) = output[seen..].iter().position(|byte| *byte == b'\n') {
+                        if let Some(name) = String::from_utf8_lossy(&output[seen..seen + end]).strip_prefix("@@") {
+                            section(name.trim());
+                        }
+                        seen += end + 1;
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+    };
+    let finished = tokio::time::timeout(limit, collect).await.is_ok();
+    let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+    let mut text = String::from_utf8_lossy(&output).into_owned();
+    if !finished {
+        text.push_str("\n@@timeout\n");
+    }
+    Ok(text)
 }
 
 /// One entry of a remote directory.

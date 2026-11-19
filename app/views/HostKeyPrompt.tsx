@@ -3,6 +3,7 @@ import { answerHostKey, ui, type HostKeyPrompt as Prompt } from "../state/store"
 import { Glyph } from "../ui/icons";
 import { Action, dialogWidth, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 /** The server's key, asked about once; a changed key is an alarm, not a formality. */
 /** A fingerprint has no spaces: zero-width ones every 12 characters let it wrap in a narrow dialog. */
@@ -19,13 +20,13 @@ export function HostKeyPrompt() {
     <Modal
       open
       width={dialogWidth(460)}
-      title={changed ? "This server's key changed" : "New server"}
+      title={changed ? t("This server's key changed") : t("New server")}
       closeOnOverlay={false}
       onOpenChange={open => { if (!open) answerHostKey(prompt.request, false); }}
       footer={
         <Row gap={8} justify="end">
-          <Action label="Cancel" onClick={() => answerHostKey(prompt.request, false)} />
-          <Action tone={changed ? "danger" : "primary"} label={changed ? "Trust the new key" : "Trust and connect"} onClick={() => answerHostKey(prompt.request, true)} />
+          <Action label={t("Cancel")} onClick={() => answerHostKey(prompt.request, false)} />
+          <Action tone={changed ? "danger" : "primary"} label={changed ? t("Trust the new key") : t("Trust and connect")} onClick={() => answerHostKey(prompt.request, true)} />
         </Row>
       }
     >
@@ -34,18 +35,18 @@ export function HostKeyPrompt() {
           <Row gap={10} style={{ padding: 12, background: color.dangerSoft, radius: radius.control }}>
             <Glyph name="alert" size={16} color={color.danger} />
             <Text size={13} color={color.text} style={{ lineHeight: 1.45, flex: 1 }}>
-              {`The key ${address} presents is not the one you trusted before. Someone may be intercepting the connection, or the server was reinstalled. Only continue if you know why it changed.`}
+              {t("The key {address} presents is not the one you trusted before. Someone may be intercepting the connection, or the server was reinstalled. Only continue if you know why it changed.", { address })}
             </Text>
           </Row>
         ) : (
           <Text size={13} color={color.muted} style={{ lineHeight: 1.45 }}>
-            {`First connection to ${address}. Check the fingerprint with the server's administrator, or against ssh-keygen -lf on the server, before you trust it.`}
+            {t("First connection to {address}. Check the fingerprint with the server's administrator, or against ssh-keygen -lf on the server, before you trust it.", { address })}
           </Text>
         )}
         <Column gap={6} style={{ padding: 12, background: color.canvas, radius: radius.control, borderColor: color.line, borderWidth: 1 }}>
           <Text size={11.5} weight={600} color={color.faint}>{prompt.algorithm}</Text>
           <Text size={12.5} color={color.text} style={{ ...mono, userSelect: "text" }}>{breakable(prompt.fingerprint)}</Text>
-          {changed ? <Text size={12} color={color.faint} style={mono}>{breakable(`was ${prompt.previous}`)}</Text> : null}
+          {changed ? <Text size={12} color={color.faint} style={mono}>{breakable(t("was {previous}", { previous: prompt.previous }))}</Text> : null}
         </Column>
       </Column>
     </Modal>

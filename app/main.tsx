@@ -29,6 +29,7 @@ import { cancelPath } from "./views/Files";
 import { forwardPointer, imeKey, sessionOfIme, sessionOfNode, touchPointer } from "./views/TerminalPane";
 import { touch } from "./ui/kit";
 import { applyUpdate, checkUpdates, startUpdateChecks } from "./state/updates";
+import { t } from "./i18n";
 
 /**
  * Android Back with nothing left to go back from (app.onBack below) arrives as a close request:
@@ -60,8 +61,8 @@ app.onBack(() => {
   app.update();
   return true;
 });
-dialogs.open = async () => (await app.openFilesDialog({ title: "Upload files" })) ?? [];
-dialogs.save = async name => (await app.saveFileDialog({ title: "Save as", fileName: name })) ?? undefined;
+dialogs.open = async () => (await app.openFilesDialog({ title: t("Upload files") })) ?? [];
+dialogs.save = async name => (await app.saveFileDialog({ title: t("Save as"), fileName: name })) ?? undefined;
 dialogs.focus = id => app.focus(id);
 biometrics.authenticate = async reason => {
   const result = await authenticate({ reason });
@@ -220,3 +221,6 @@ app.onEvent(event => {
 });
 
 await app.closed;
+// The window is gone but the update timer (setInterval), the core's threads and open sessions
+// would keep the process alive, invisible and without a tray icon. There is nothing left to show.
+process.exit(0);

@@ -2,6 +2,7 @@
 //! vault and transports live here; the UI talks to it through the C ABI in [`ffi`].
 
 mod app;
+mod audit;
 mod clipboard;
 mod echo;
 mod events;

@@ -1,10 +1,11 @@
 import { Column, Pressable, Row, Scroll, Select, Text } from "@tarve/core";
 import { createSyncedVault, createVault, joinVault, listVaults, refresh, ui, unlockVault, unlockWithFingerprint, type SyncForm, type SyncProvider } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { compact, Action, Field, mono, Segments } from "../ui/kit";
+import { compact, Action, Field, Segments } from "../ui/kit";
 import { AwsSetup } from "./Aws";
 import { CloudflareConnect, cf } from "./Cloudflare";
 import { color, font, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 const form = { password: "", confirm: "", provider: "r2" as SyncProvider, account: "", bucket: "", region: "", accessKey: "", secretKey: "", hasVault: undefined as boolean | undefined, vaults: undefined as string[] | undefined, name: "termio" };
 const NEW = "__new__";
@@ -48,15 +49,15 @@ function run(label: string, action: () => void): void {
 }
 
 function actionLabel(): string {
-  if (ui.phase === "create") return "Create vault";
-  if (ui.phase !== "join") return "Unlock";
-  return form.hasVault === false ? "Create synced vault" : form.hasVault ? "Download vault" : "Find vaults";
+  if (ui.phase === "create") return t("Create vault");
+  if (ui.phase !== "join") return t("Unlock");
+  return form.hasVault === false ? t("Create synced vault") : form.hasVault ? t("Download vault") : t("Find vaults");
 }
 
 function busyLabel(): string {
-  if (ui.phase === "create") return "Creating vault…";
-  if (ui.phase !== "join") return "Unlocking…";
-  return form.hasVault === false ? "Creating synced vault…" : form.hasVault ? "Downloading vault…" : "Finding vaults…";
+  if (ui.phase === "create") return t("Creating vault…");
+  if (ui.phase !== "join") return t("Unlocking…");
+  return form.hasVault === false ? t("Creating synced vault…") : form.hasVault ? t("Downloading vault…") : t("Finding vaults…");
 }
 
 function submit(): void {
@@ -82,7 +83,7 @@ async function fingerprintUnlock(): Promise<void> {
 function picked(chosen: SyncForm): void {
   ui.error = undefined;
   Object.assign(form, chosen);
-  run("Finding vaults…", manualCheck);
+  run(t("Finding vaults…"), manualCheck);
 }
 
 function manualCheck(): void {
@@ -117,12 +118,12 @@ export function Unlock() {
   }
   const creating = ui.phase === "create";
   const joining = ui.phase === "join";
-  const title = creating ? "Create your vault" : joining ? "Join a synced vault" : "Unlock Termio";
+  const title = creating ? t("Create your vault") : joining ? t("Join a synced vault") : t("Unlock Termio");
   const lead = creating
-    ? "Hosts, keys and passwords live in one file encrypted with this password. It never leaves this device unencrypted, and it cannot be recovered."
+    ? t("Hosts, keys and passwords live in one file encrypted with this password. It never leaves this device unencrypted, and it cannot be recovered.")
     : joining
-      ? "Pick the Cloudflare R2 or AWS S3 bucket that holds your vault, or name a new one to create there. A vault synced with both comes from either."
-      : "Your vault is encrypted on this device.";
+      ? t("Pick the Cloudflare R2 or AWS S3 bucket that holds your vault, or name a new one to create there. A vault synced with both comes from either.")
+      : t("Your vault is encrypted on this device.");
   return (
     <Scroll flex={1} style={{ background: color.canvas }}>
     <Column align="center" justify={joining ? "start" : "center"} style={{ minHeight: "100%", padding: { top: 32, bottom: 32, left: 16, right: 16 } }}>
@@ -149,12 +150,12 @@ export function Unlock() {
           {joining && form.provider === "s3" ? (
             <Column gap={14}>
               <Row gap={10}>
-                <Field label="Bucket" value={form.bucket} onChange={value => { form.bucket = value; forget(); }} monospace grow={1} />
-                <Field label="Region" value={form.region} placeholder="Detected" onChange={value => { form.region = value; forget(); }} monospace grow={1} />
+                <Field label={t("Bucket")} value={form.bucket} onChange={value => { form.bucket = value; forget(); }} monospace grow={1} />
+                <Field label={t("Region")} value={form.region} placeholder={t("Detected")} onChange={value => { form.region = value; forget(); }} monospace grow={1} />
               </Row>
               <Row gap={10}>
-                <Field label="Access key ID" value={form.accessKey} onChange={value => { form.accessKey = value; }} monospace grow={1} />
-                <Field label="Secret" type="password" value={form.secretKey} onChange={value => { form.secretKey = value; }} grow={1} />
+                <Field label={t("Access key ID")} value={form.accessKey} onChange={value => { form.accessKey = value; }} monospace grow={1} />
+                <Field label={t("Secret")} type="password" value={form.secretKey} onChange={value => { form.secretKey = value; }} grow={1} />
               </Row>
               <AwsSetup bucket={form.bucket} />
             </Column>
@@ -163,17 +164,17 @@ export function Unlock() {
             <Column gap={10}>
               <CloudflareConnect onPick={picked} selected={form.bucket} />
               <Pressable focusable onClick={() => { cf.mode = "manual"; }} style={{ hover: { opacity: 0.8 } }}>
-                <Text size={12} color={color.faint}>Use access keys instead</Text>
+                <Text size={12} color={color.faint}>{t("Use access keys instead")}</Text>
               </Pressable>
             </Column>
           ) : null}
           {joining && form.provider === "r2" && cf.mode === "manual" ? (
             <Column gap={14}>
-              <Field label="Cloudflare account ID" value={form.account} onChange={value => { form.account = value; }} monospace />
-              <Field label="Bucket" value={form.bucket} onChange={value => { form.bucket = value; forget(); }} monospace />
+              <Field label={t("Cloudflare account ID")} value={form.account} onChange={value => { form.account = value; }} monospace />
+              <Field label={t("Bucket")} value={form.bucket} onChange={value => { form.bucket = value; forget(); }} monospace />
               <Row gap={10}>
-                <Field label="Access key ID" value={form.accessKey} onChange={value => { form.accessKey = value; }} monospace grow={1} />
-                <Field label="Secret" type="password" value={form.secretKey} onChange={value => { form.secretKey = value; }} grow={1} />
+                <Field label={t("Access key ID")} value={form.accessKey} onChange={value => { form.accessKey = value; }} monospace grow={1} />
+                <Field label={t("Secret")} type="password" value={form.secretKey} onChange={value => { form.secretKey = value; }} grow={1} />
               </Row>
             </Column>
           ) : null}
@@ -181,20 +182,20 @@ export function Unlock() {
             <Column gap={10} motionFrom={{ opacity: 0, transform: { y: 8 } }} style={{ opacity: 1, transform: { y: 0 }, transition: { opacity: { duration: 200, easing: "easeOut" }, transform: { duration: 320, easing: "spring" } } }}>
               {form.vaults.length ? (
                 <Column gap={6}>
-                  <Text size={12} weight={600} color={color.muted}>Vault</Text>
-                  <Select style={{ width: "100%" }} id="vault-pick" value={form.hasVault ? form.name : NEW} options={[...form.vaults.map(name => ({ value: name, label: `${name}.vault` })), { value: NEW, label: "+ New vault…" }]} onValueChange={chooseVault} />
+                  <Text size={12} weight={600} color={color.muted}>{t("Vault")}</Text>
+                  <Select style={{ width: "100%" }} id="vault-pick" value={form.hasVault ? form.name : NEW} options={[...form.vaults.map(name => ({ value: name, label: `${name}.vault` })), { value: NEW, label: t("+ New vault…") }]} onValueChange={chooseVault} />
                 </Column>
               ) : (
                 <Row gap={8} align="center" style={{ padding: { top: 8, bottom: 8, left: 10, right: 10 }, background: color.raised, radius: radius.control }}>
                   <Glyph name="plus" size={14} color={color.accent} />
-                  <Text size={12.5} color={color.muted}>{`${form.bucket} has no vault yet: create one.`}</Text>
+                  <Text size={12.5} color={color.muted}>{t("{bucket} has no vault yet: create one.", { bucket: form.bucket })}</Text>
                 </Row>
               )}
-              {form.hasVault === false ? <Field label="Vault name" value={form.name} monospace hint={`Saved as ${form.name.trim() || "termio"}.vault`} onChange={value => { form.name = value.replace(/[^A-Za-z0-9._-]/g, ""); }} /> : null}
+              {form.hasVault === false ? <Field label={t("Vault name")} value={form.name} monospace hint={t("Saved as {file}", { file: `${form.name.trim() || "termio"}.vault` })} onChange={value => { form.name = value.replace(/[^A-Za-z0-9._-]/g, ""); }} /> : null}
             </Column>
           ) : null}
-          {joining && !form.vaults ? null : <Field id="master-password" label="Master password" type="password" value={form.password} onChange={value => { form.password = value; }} onSubmit={creating || form.hasVault === false ? undefined : submit} />}
-          {creating || (joining && form.hasVault === false) ? <Field label="Repeat it" type="password" value={form.confirm} onChange={value => { form.confirm = value; }} onSubmit={submit} hint="At least 8 characters. A passphrase of four or more words is easiest to remember." /> : null}
+          {joining && !form.vaults ? null : <Field id="master-password" label={t("Master password")} type="password" value={form.password} onChange={value => { form.password = value; }} onSubmit={creating || form.hasVault === false ? undefined : submit} />}
+          {creating || (joining && form.hasVault === false) ? <Field label={t("Repeat it")} type="password" value={form.confirm} onChange={value => { form.confirm = value; }} onSubmit={submit} hint={t("At least 8 characters. A passphrase of four or more words is easiest to remember.")} /> : null}
           {ui.error ? (
             <Row
               key={`error-${shake}`}
@@ -215,26 +216,23 @@ export function Unlock() {
             </Row>
           ) : null}
           <Action tone="primary" label={pending ?? actionLabel()} busy={pending !== undefined} disabled={joining && (!form.bucket || (form.hasVault === false && !form.name.trim()))} onClick={submit} />
-          {fingerprint ? <Action icon="shield" label="Unlock with fingerprint" disabled={pending !== undefined} onClick={() => { void fingerprintUnlock(); }} /> : null}
+          {fingerprint ? <Action icon="shield" label={t("Unlock with fingerprint")} disabled={pending !== undefined} onClick={() => { void fingerprintUnlock(); }} /> : null}
             {creating ? (
             <Column gap={10}>
               <Row gap={10} align="center">
                 <Row flex={1} style={{ height: 1, background: color.line }} />
-                <Text size={11.5} color={color.faint}>already use Termio?</Text>
+                <Text size={11.5} color={color.faint}>{t("already use Termio?")}</Text>
                 <Row flex={1} style={{ height: 1, background: color.line }} />
               </Row>
-              <Action icon="cloud" label="Join a synced vault" onClick={() => { ui.phase = "join"; ui.error = undefined; cf.mode = "cloudflare"; }} />
+              <Action icon="cloud" label={t("Join a synced vault")} onClick={() => { ui.phase = "join"; ui.error = undefined; cf.mode = "cloudflare"; }} />
             </Column>
           ) : null}
         </Column>
         <Row gap={14} justify="center">
-          {ui.phase !== "locked" && !creating ? <Switch to="locked" label="I have a vault here" /> : null}
-                    {joining ? <Switch to="create" label="Start a new vault" /> : null}
+          {ui.phase !== "locked" && !creating ? <Switch to="locked" label={t("I have a vault here")} /> : null}
+                    {joining ? <Switch to="create" label={t("Start a new vault")} /> : null}
         </Row>
       </Column>
-      <Row style={{ margin: { top: 14 }, maxWidth: "100%", minWidth: 0 }}>
-        <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis", minWidth: 0 }}>{ui.vaultPath}</Text>
-      </Row>
     </Column>
     </Scroll>
   );

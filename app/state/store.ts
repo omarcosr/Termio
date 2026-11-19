@@ -4,6 +4,7 @@
 import { onCoreEvent, type CoreEvent } from "../core/events";
 import { core } from "../core/plugin";
 import { setPalette } from "../ui/tokens";
+import { plural, setLanguage, t, type Key, type LanguageChoice } from "../i18n";
 import { keepAlive, openExternal, secureStore, toast as showToast, type KeepAlive, clipboard, store } from "@tarve/core";
 
 export interface VaultRecord<T = Record<string, unknown>> {
@@ -153,7 +154,6 @@ export interface SyncSettings {
  */
 export const ui = store({
   phase: "locked" as Phase,
-  vaultPath: "",
   busy: false,
   error: undefined as string | undefined,
   view: "hosts" as View,
@@ -175,6 +175,11 @@ export const ui = store({
   syncTargets: {} as Partial<Record<SyncProvider, SyncSettings>>,
   settingsOpen: false,
   agentInstall: {} as Record<string, AgentInstall>,
+  /** The security audit: what it may run, the last report and the run in progress per host, and the host whose report is open. */
+  auditSettings: { enabled: false, categories: {}, sudo: false, cve: false, probe: false } as AuditSettings,
+  audits: {} as Record<string, AuditReport>,
+  auditRuns: {} as Record<string, AuditRun>,
+  auditOpen: undefined as string | undefined,
   appearance: { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" } as Appearance,
   paletteOpen: false,
   /** An error nothing else handled, shown in a dialog instead of closing the app. */
@@ -220,7 +225,7 @@ function syncKeepAlive(): void {
   const terminals = Object.values(ui.sessions).filter(info => info.status !== "closed").length;
   const files = ui.tabs.filter(tab => tab.kind === "files").length;
   const open = terminals + files;
-  const text = open === 0 ? "" : [terminals ? (terminals === 1 ? "1 session" : `${terminals} sessions`) : "", files ? (files === 1 ? "1 file browser" : `${files} file browsers`) : ""].filter(Boolean).join(", ") + " open";
+  const text = open === 0 ? "" : t("{what} open", { what: [terminals ? plural(terminals, "{count} session", "{count} sessions") : "", files ? plural(files, "{count} file browser", "{count} file browsers") : ""].filter(Boolean).join(", ") });
   if (text === keptText) return;
   keptText = text;
   const report = (result: { error?: string }) => { if (result.error) console.warn("[termio] keepAlive", result.error); };
@@ -228,9 +233,9 @@ function syncKeepAlive(): void {
     void keptAlive?.release();
     keptAlive = undefined;
   } else if (keptAlive) {
-    void keptAlive.update({ title: "Termio is connected", text }).then(report, () => {});
+    void keptAlive.update({ title: t("Termio is connected"), text }).then(report, () => {});
   } else {
-    keptAlive = keepAlive({ title: "Termio is connected", text });
+    keptAlive = keepAlive({ title: t("Termio is connected"), text });
     void keptAlive.result.then(report, () => {});
   }
 }
@@ -259,7 +264,7 @@ export function fingerprintEnabled(): boolean {
 }
 
 export async function unlockWithFingerprint(): Promise<void> {
-  const check = await biometrics.authenticate("Unlock Termio");
+  const check = await biometrics.authenticate(t("Unlock Termio"));
   if (!check.success) {
     if (check.error) { ui.error = check.error; render(); }
     return;
@@ -274,7 +279,7 @@ export async function unlockWithFingerprint(): Promise<void> {
     // The password changed elsewhere (a synced vault): the sealed one is useless now.
     await secureStore.delete(UNLOCK_ALIAS).catch(() => undefined);
     ui.fingerprint = false;
-    ui.error = "The saved password no longer opens the vault: type it once to unlock.";
+    ui.error = t("The saved password no longer opens the vault: type it once to unlock.");
     render();
   }
 }
@@ -285,13 +290,13 @@ export async function setFingerprint(on: boolean): Promise<void> {
     ui.fingerprint = false;
     return render();
   }
-  if (!openedWith) return toast("Lock and unlock the vault with its password once, then turn this on", "error");
-  const check = await biometrics.authenticate("Turn on fingerprint unlock");
-  if (!check.success) return toast(check.supported ? check.error ?? "Not confirmed" : "This device has no fingerprint or screen lock", "error");
+  if (!openedWith) return toast(t("Lock and unlock the vault with its password once, then turn this on"), "error");
+  const check = await biometrics.authenticate(t("Turn on fingerprint unlock"));
+  if (!check.success) return toast(check.supported ? check.error ?? t("Not confirmed") : t("This device has no fingerprint or screen lock"), "error");
   const saved = await secureStore.seal(UNLOCK_ALIAS, openedWith).catch((error: unknown) => ({ supported: true, error: message(error) }));
-  if (!saved.supported || saved.error) return toast(saved.error ?? "Could not save", "error");
+  if (!saved.supported || saved.error) return toast(saved.error ?? t("Could not save"), "error");
   ui.fingerprint = true;
-  toast("Fingerprint unlock is on");
+  toast(t("Fingerprint unlock is on"));
 }
 export function refresh(): void {
   render();
@@ -301,7 +306,7 @@ export function toast(text: string, tone: "ok" | "error" = "ok"): void {
   showToast(text, { tone });
 }
 
-const sources: Record<string, string> = {
+const sources: Record<string, Key> = {
   render: "while drawing the window",
   "event-handler": "while handling a click or key",
   listener: "in an event listener",
@@ -320,11 +325,11 @@ const sources: Record<string, string> = {
  * copy or dismiss it. Repeats of the open error are ignored so a failing render cannot loop.
  */
 export function reportFault(error: unknown, where?: string): void {
-  const text = message(error) || "Unknown error";
+  const text = message(error) || t("Unknown error");
   const stack = error instanceof Error && error.stack ? error.stack : text;
   console.error(`[termio] ${where ?? "error"}`, error);
   if (ui.fault?.message === text) return;
-  ui.fault = { message: text, detail: `${where ? `Where: ${sources[where] ?? where}\n` : ""}${stack}` };
+  ui.fault = { message: text, detail: `${where ? `${t("Where: {place}", { place: sources[where] ? t(sources[where]!) : where })}\n` : ""}${stack}` };
   try { render(); } catch { /* the dialog shows on the next frame */ }
 }
 
@@ -356,7 +361,6 @@ function attempt<T>(action: () => T): T | undefined {
 
 export function loadStatus(): void {
   const status = core().call<{ exists: boolean; unlocked: boolean; path: string; syncConfigured: boolean }>({ op: "vault.status" });
-  ui.vaultPath = status.path;
   ui.sync.configured = status.syncConfigured;
   if (status.unlocked) {
     ui.phase = "ready";
@@ -370,7 +374,7 @@ export function loadStatus(): void {
 
 export function createVault(password: string, confirm: string): void {
   if (password !== confirm) {
-    ui.error = "The two passwords differ.";
+    ui.error = t("The two passwords differ.");
     return render();
   }
   if (attempt(() => core().call({ op: "vault.create", password })) !== undefined) {
@@ -391,7 +395,7 @@ export function joinVault(password: string, r2: SyncForm): void {
   if (joined) {
     openedWith = password;
     enterVault();
-    toast(`Joined the synced vault: ${joined.pulled} items`);
+    toast(t("Joined the synced vault: {count} items", { count: joined.pulled }));
   }
 }
 
@@ -418,7 +422,7 @@ export function lockVault(): void {
   for (const tab of [...ui.tabs]) closeTab(tab.id);
   core().call({ op: "vault.lock" });
   openedWith = undefined;
-  Object.assign(ui, { phase: "locked", hosts: [], keys: [], known: [], editing: undefined, active: "home", prompts: [] });
+  Object.assign(ui, { phase: "locked", hosts: [], keys: [], known: [], editing: undefined, active: "home", prompts: [], audits: {}, auditRuns: {}, auditOpen: undefined });
   render();
 }
 
@@ -428,6 +432,7 @@ export function reload(): void {
   ui.keys = list<KeyData>("key");
   ui.known = list<KnownHostData>("known_host");
   ui.snippets = list<SnippetData>("snippet");
+  loadAudit(list);
   const targets = core().call<Record<SyncProvider, VaultRecord<SyncSettings> | null>>({ op: "sync.settings" });
   ui.syncTargets = {};
   for (const provider of ["r2", "s3"] as const) {
@@ -457,7 +462,7 @@ export function saveHost(): void {
   if (!editing) return;
   const data = { ...editing.data, name: editing.data.name.trim(), address: editing.data.address.trim() };
   if (!data.address) {
-    ui.error = "A host needs an address.";
+    ui.error = t("A host needs an address.");
     return render();
   }
   if (!data.name) data.name = data.address;
@@ -524,7 +529,7 @@ export function importSshHosts(hosts: SshConfigHost[], importKeys: boolean): voi
   const imported = attempt(() => core().call<{ imported: number }>({ op: "import.apply", hosts, importKeys }));
   if (!imported) return;
   reload();
-  toast(imported.imported === 1 ? "Imported 1 host from ~/.ssh/config" : `Imported ${imported.imported} hosts from ~/.ssh/config`);
+  toast(plural(imported.imported, "Imported {count} host from {from}", "Imported {count} hosts from {from}", { from: "~/.ssh/config" }));
 }
 
 /** Saves hosts of the last scan by key, with their passwords, in their own groups (or "Imported"). */
@@ -532,7 +537,7 @@ export function importScanned(keys: string[], importKeys: boolean, from: string)
   const imported = attempt(() => core().call<{ imported: number }>({ op: "import.apply", keys, importKeys }));
   if (!imported) return;
   reload();
-  toast(imported.imported === 1 ? `Imported 1 host from ${from}` : `Imported ${imported.imported} hosts from ${from}`);
+  toast(plural(imported.imported, "Imported {count} host from {from}", "Imported {count} hosts from {from}", { from }));
 }
 
 /** `user@host:port`, `host:port` or `host`. */
@@ -559,7 +564,7 @@ function localShell(): string | undefined {
 function newSession(host: VaultRecord<HostData> | undefined): number | undefined {
   const opened = attempt(() => host ? core().call<{ id: number }>({ op: "ssh.open", host: host.id }) : core().call<{ id: number }>({ op: "session.open", kind: "local", ...(localShell() ? { program: localShell() } : {}) }));
   if (!opened) {
-    toast(ui.error ?? "Could not open the session", "error");
+    toast(ui.error ?? t("Could not open the session"), "error");
     return undefined;
   }
   ui.sessions[opened.id] = { session: opened.id, title: host?.data.name ?? "Local", host: host?.id, status: host ? "connecting" : "connected", forwards: [] };
@@ -720,7 +725,7 @@ export function dropOnPane(target: number, zone: DropZone): void {
   }
   const staying = tab.panes.filter(session => !moving.includes(session));
   if (staying.length + moving.length > MAX_PANES) {
-    toast(`A tab holds at most ${MAX_PANES} panes`, "error");
+    toast(t("A tab holds at most {count} panes", { count: MAX_PANES }), "error");
     return;
   }
   lift(moving);
@@ -746,7 +751,7 @@ export function dropOnTab(id: number): void {
   }
   if (target.kind !== "terminal" || target.panes.includes(source.session)) return render();
   if (target.panes.length >= MAX_PANES) {
-    toast(`A tab holds at most ${MAX_PANES} panes`, "error");
+    toast(t("A tab holds at most {count} panes", { count: MAX_PANES }), "error");
     return;
   }
   lift([source.session]);
@@ -800,16 +805,23 @@ export function cycleTabs(step: 1 | -1): void {
 }
 
 export function tabTitle(tab: Tab): string {
-  if (tab.kind === "files") return `Files · ${ui.hosts.find(host => host.id === tab.files?.host)?.data.name ?? "host"}`;
+  if (tab.kind === "files") return t("Files · {host}", { host: ui.hosts.find(host => host.id === tab.files?.host)?.data.name ?? t("host") });
   const titles = tab.panes.map(session => ui.sessions[session]?.title ?? "…");
   return titles.length > 1 ? `${titles[0]} +${titles.length - 1}` : titles[0] ?? "…";
 }
 
+/**
+ * The dialog closes at once; the answer (a vault write) and the reload block the UI thread, so
+ * they run a frame later — otherwise the click shows nothing and invites a second one.
+ */
 export function answerHostKey(request: number, trust: boolean): void {
-  try { core().call({ op: "hostkey.answer", request, trust, remember: true }); } catch { /* answered elsewhere */ }
+  if (!ui.prompts.some(prompt => prompt.request === request)) return;
   ui.prompts = ui.prompts.filter(prompt => prompt.request !== request);
-  if (trust) reload();
   render();
+  setTimeout(() => {
+    try { core().call({ op: "hostkey.answer", request, trust, remember: true }); } catch { /* answered elsewhere */ }
+    if (trust) reload();
+  }, 50);
 }
 
 // --- Snippets ------------------------------------------------------------------------------
@@ -818,7 +830,7 @@ export function answerHostKey(request: number, trust: boolean): void {
 export function runSnippet(id: string, session = focusedSession()): void {
   const snippet = ui.snippets.find(record => record.id === id);
   if (!snippet) return;
-  if (session === undefined) return toast("Open a terminal first", "error");
+  if (session === undefined) return toast(t("Open a terminal first"), "error");
   const none = { shiftKey: false, altKey: false, ctrlKey: false, metaKey: false };
   // Line by line, each followed by Enter, so a multi-line snippet runs as typed.
   const lines = snippet.data.command.replace(/\r\n?/g, "\n").split("\n");
@@ -831,7 +843,7 @@ export function runSnippet(id: string, session = focusedSession()): void {
 /** Runs a snippet in every pane of the current tab at once. */
 export function broadcastSnippet(id: string): void {
   const tab = activeTab();
-  if (!tab || tab.kind !== "terminal") return toast("Open a terminal first", "error");
+  if (!tab || tab.kind !== "terminal") return toast(t("Open a terminal first"), "error");
   for (const session of tab.panes) runSnippet(id, session);
 }
 
@@ -846,7 +858,7 @@ export function saveSnippet(): void {
   const editing = ui.editingSnippet;
   if (!editing) return;
   if (!editing.data.command.trim()) {
-    ui.error = "A snippet needs a command.";
+    ui.error = t("A snippet needs a command.");
     return render();
   }
   const data = { name: editing.data.name.trim() || editing.data.command.trim().split("\n")[0]!.slice(0, 40), command: editing.data.command };
@@ -876,7 +888,7 @@ function sftpRequest<T>(op: string, args: Record<string, unknown>): Promise<T> {
 
 export function openFiles(hostId: string): void {
   const opened = attempt(() => core().call<{ id: number }>({ op: "sftp.open", host: hostId }));
-  if (!opened) return toast(ui.error ?? "Could not open files", "error");
+  if (!opened) return toast(ui.error ?? t("Could not open files"), "error");
   const tab: Tab = { id: nextTab++, kind: "files", panes: [], direction: "row", focus: 0, files: { id: opened.id, host: hostId, state: "connecting", path: "", entries: [], loading: false, transfers: [] } };
   ui.tabs.push(tab);
   ui.active = tab.id;
@@ -967,19 +979,19 @@ export function shortTitle(title: string): string {
 // --- Keys ----------------------------------------------------------------------------------
 
 export function generateKey(name: string): boolean {
-  const created = attempt(() => core().call({ op: "keys.generate", name: name.trim() || "Termio key" }));
+  const created = attempt(() => core().call({ op: "keys.generate", name: name.trim() || t("Termio key") }));
   if (created) {
     reload();
-    toast("Key created. Copy its public half to your servers.");
+    toast(t("Key created. Copy its public half to your servers."));
   }
   return created !== undefined;
 }
 
 export function importKey(name: string, privateKey: string, passphrase: string): boolean {
-  const created = attempt(() => core().call({ op: "keys.import", name: name.trim() || "Imported key", private: privateKey, passphrase }));
+  const created = attempt(() => core().call({ op: "keys.import", name: name.trim() || t("Imported key"), private: privateKey, passphrase }));
   if (created) {
     reload();
-    toast("Key imported");
+    toast(t("Key imported"));
   }
   return created !== undefined;
 }
@@ -1015,7 +1027,7 @@ export function configureSync(form: SyncForm): boolean {
   if (result) {
     ui.sync = { configured: true, state: "done", message: undefined, at: Date.now() };
     reload();
-    toast(`${providerName(form.provider)} is on: ${result.pushed} sent, ${result.pulled} received`);
+    toast(t("{provider} is on: {pushed} sent, {pulled} received", { provider: providerName(form.provider), pushed: result.pushed, pulled: result.pulled }));
   }
   return Boolean(result);
 }
@@ -1033,7 +1045,7 @@ export function disableSync(provider: SyncProvider): void {
   if (attempt(() => core().call({ op: "sync.disable", provider })) !== undefined) {
     reload();
     ui.sync = Object.keys(ui.syncTargets).length ? ui.sync : { configured: false, state: "idle", message: undefined, at: 0 };
-    toast(`${providerName(provider)} is off`);
+    toast(t("{provider} is off", { provider: providerName(provider) }));
   }
 }
 
@@ -1083,7 +1095,7 @@ export function listen(): void {
           const label = detail.split(" ")[0]!;
           const rest = detail.slice(label.length + 1);
           info.forwards = [...info.forwards.filter(item => item.label !== label), { label, ok: event.kind === "forward.up", message: rest || undefined }];
-          if (event.kind === "forward.error") toast(`Port forward ${label} failed: ${rest}`, "error");
+          if (event.kind === "forward.error") toast(t("Port forward {label} failed: {error}", { label, error: rest }), "error");
         } else return;
         break;
       }
@@ -1097,9 +1109,20 @@ export function listen(): void {
       const host = String(event.host);
       const state = String(event.state) as AgentInstall["state"];
       ui.agentInstall = { ...ui.agentInstall, [host]: { state, message: String(event.message ?? ""), at: Date.now() } };
-      const name = ui.hosts.find(record => record.id === host)?.data.name ?? "the server";
-      if (state === "done") toast(`Agent ready on ${name}: new sessions there are resumable`);
-      else if (state === "error") toast(`Agent install on ${name} failed`, "error");
+      const name = ui.hosts.find(record => record.id === host)?.data.name ?? t("the server");
+      if (state === "done") toast(t("Agent ready on {name}: new sessions there are resumable", { name }));
+      else if (state === "error") toast(t("Agent install on {name} failed", { name }), "error");
+      break;
+    }
+    case "audit": {
+      const host = String(event.host);
+      const state = String(event.state) as AuditRun["state"];
+      ui.auditRuns = { ...ui.auditRuns, [host]: { state, step: String(event.step ?? ""), at: Date.now() } };
+      const name = ui.hosts.find(record => record.id === host)?.data.name ?? t("the server");
+      if (state === "done" && event.report) {
+        ui.audits = { ...ui.audits, [host]: event.report as unknown as AuditReport };
+        if (ui.auditOpen !== host) toast(t("Security audit of {name} is ready", { name }));
+      } else if (state === "error" && ui.auditOpen !== host) toast(t("Security audit of {name} failed", { name }), "error");
       break;
     }
     case "sync":
@@ -1122,7 +1145,7 @@ export function listen(): void {
         const files = filesById(Number(event.id));
         if (!files) return;
         files.state = "error";
-        files.message = String(event.message ?? "Could not connect");
+        files.message = String(event.message ?? t("Could not connect"));
         break;
       }
       case "sftp.result": {
@@ -1140,17 +1163,17 @@ export function listen(): void {
       }
       // The core owns no clipboard: a session's copy and paste go through Tarve's.
       case "clipboard.copy":
-        clipboard.writeText(String(event.message ?? "")).catch(() => toast("Could not reach the clipboard", "error"));
+        clipboard.writeText(String(event.message ?? "")).catch(() => toast(t("Could not reach the clipboard"), "error"));
         return;
       case "clipboard.paste": {
         const session = event.session;
         if (session === undefined) return;
-        clipboard.readText().then(text => { if (text) core().text(session, text); }, () => toast("Could not reach the clipboard", "error"));
+        clipboard.readText().then(text => { if (text) core().text(session, text); }, () => toast(t("Could not reach the clipboard"), "error"));
         return;
       }
       case "session.error":
       case "surface.error":
-        toast(String(event.message ?? "Something went wrong"), "error");
+        toast(String(event.message ?? t("Something went wrong")), "error");
         return;
       default:
         return;
@@ -1171,12 +1194,15 @@ export interface Appearance {
   shell: string;
   /** The vault's side menu shows icons only. */
   sidebarCollapsed?: boolean;
+  /** The UI language; "auto" or missing follows the system. */
+  language?: LanguageChoice;
 }
 
 const DEFAULT_APPEARANCE: Appearance = { fontFamily: "Cascadia Mono", fontSize: 13, theme: "termio", cursor: "block", padding: 6, shell: "" };
 
 function applyAppearance(): void {
   setPalette(ui.appearance.theme);
+  setLanguage(ui.appearance.language);
   attempt(() => core().call({ op: "terminal.appearance", ...ui.appearance }));
 }
 
@@ -1209,12 +1235,106 @@ export interface AgentInstall {
 }
 
 export function installAgent(hostId: string): void {
-  ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "checking", message: "Connecting…", at: Date.now() } };
+  ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "checking", message: t("Connecting…"), at: Date.now() } };
   if (attempt(() => core().call({ op: "agent.install", host: hostId })) === undefined) {
-    ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "error", message: ui.error ?? "could not start", at: Date.now() } };
+    ui.agentInstall = { ...ui.agentInstall, [hostId]: { state: "error", message: ui.error ?? t("could not start"), at: Date.now() } };
   }
   render();
 }
+// --- Security audit --------------------------------------------------------------------------
+
+/** The groups of checks, as the core names them (crates/termio-core/src/audit.rs). */
+export type AuditCategory = "system" | "packages" | "ssh" | "accounts" | "files" | "network" | "services" | "containers" | "logs" | "secrets";
+export type AuditSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+/** `label` and `hint` are i18n keys: views translate them with `t()`. */
+export const AUDIT_CATEGORIES: { value: AuditCategory; label: Key; hint: Key; on: boolean }[] = [
+  { value: "system", label: "System", hint: "Release end of life, pending reboot, kernel, CPU flaws, sysctl hardening, SELinux/AppArmor, clock, /tmp mounts.", on: true },
+  { value: "packages", label: "Packages", hint: "Pending and security updates, stale package lists, automatic updates.", on: true },
+  { value: "ssh", label: "SSH server", hint: "Root and password logins, weak ciphers and key exchanges, OpenSSH version, host key permissions.", on: true },
+  { value: "accounts", label: "Accounts", hint: "Extra root accounts, empty or weak passwords (only their kind is read), sudo rules, root-equivalent groups, authorized keys.", on: true },
+  { value: "files", label: "Files", hint: "SUID programs, world-writable files and folders, capabilities, orphaned files. Walks the whole disk: the slowest check.", on: true },
+  { value: "network", label: "Network", hint: "Listening ports, databases and admin services exposed, firewall.", on: true },
+  { value: "services", label: "Services", hint: "Legacy cleartext services, failed units, outdated runtimes, writable cron jobs and units, scheduled jobs.", on: true },
+  { value: "containers", label: "Containers", hint: "Docker socket, privileged containers, host mounts and capabilities, published ports, old images.", on: true },
+  { value: "logs", label: "Logins and logs", hint: "Failed SSH logins and their sources, fail2ban/CrowdSec, auditd, recent logins.", on: true },
+  { value: "secrets", label: "Secrets", hint: "Key and credential files, passwords in shell histories (counted, never read), repositories and dumps in web folders. Off by default.", on: false },
+];
+
+export interface AuditSettings {
+  enabled: boolean;
+  categories: Partial<Record<AuditCategory, boolean>>;
+  /** Privileged reads through sudo -n: passwordless sudo only, never prompts. */
+  sudo: boolean;
+  /** Match package versions against OSV.dev. */
+  cve: boolean;
+  /** Try the exposed ports from this device. */
+  probe: boolean;
+}
+
+export interface AuditFinding {
+  id: string;
+  category: string;
+  /** "rule" (a check judged on this device), "osv", "osv-approx" (another distribution's data) or "vendor" (the server's own advisories). */
+  source?: "rule" | "osv" | "osv-approx" | "vendor";
+  severity: AuditSeverity;
+  title: string;
+  detail: string;
+  evidence: string;
+  fix: string;
+}
+
+export interface AuditReport {
+  host: string;
+  started: number;
+  finished: number;
+  score: number;
+  counts: Record<AuditSeverity, number>;
+  facts: { host?: string; user?: string; root: boolean; sudo: boolean; os?: string; kernel?: string; arch?: string; virtualization?: string; packages: number; manager: string };
+  categories: AuditCategory[];
+  options: { sudo: boolean; cve: boolean; probe: boolean };
+  cve: { status: string; ecosystem?: string; approximate?: string | null; packages?: number; affected?: number; vulnerabilities?: number; vendor?: number; truncated?: boolean; error?: string };
+  findings: AuditFinding[];
+}
+
+export interface AuditRun {
+  state: "running" | "done" | "error";
+  step: string;
+  at: number;
+}
+
+export function auditCategoryOn(category: AuditCategory): boolean {
+  return ui.auditSettings.categories[category] ?? AUDIT_CATEGORIES.find(item => item.value === category)!.on;
+}
+
+function loadAudit(list: <T>(kind: string) => VaultRecord<T>[]): void {
+  const saved = list<Partial<AuditSettings>>("settings").find(record => record.id === "audit")?.data;
+  ui.auditSettings = { enabled: false, categories: {}, sudo: false, cve: false, probe: false, ...saved };
+  const audits: Record<string, AuditReport> = {};
+  for (const record of list<AuditReport>("audit")) if (record.data.host) audits[record.data.host] = record.data;
+  ui.audits = audits;
+}
+
+export function saveAuditSettings(change: Partial<AuditSettings>): void {
+  ui.auditSettings = { ...ui.auditSettings, ...change };
+  attempt(() => core().call({ op: "records.put", kind: "settings", id: "audit", data: ui.auditSettings }));
+}
+
+/** Opens a host's last report (or the offer to run the first one). */
+export function openAudit(hostId: string): void {
+  ui.auditOpen = hostId;
+  render();
+}
+
+/** Starts an audit; the core refuses when Settings turned it off. */
+export function runAudit(hostId: string): void {
+  ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "running", step: "Starting…", at: Date.now() } };
+  if (attempt(() => core().call({ op: "audit.run", host: hostId })) === undefined) {
+    ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "error", step: ui.error ?? t("could not start"), at: Date.now() } };
+  }
+  render();
+}
+
 let termSearchTimer: ReturnType<typeof setTimeout> | undefined;
 /** Opens the search bar over the focused pane. */
 export function openTermSearch(): void {

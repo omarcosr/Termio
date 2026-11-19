@@ -36,6 +36,9 @@ pub struct DxgiPresenter {
     previous: Option<Rect>,
     /// Presents left that must upload everything.
     full_frames: u32,
+    /// Whether the panel shows the chain yet: it gets it only after the first present, since a
+    /// chain handed over empty shows its undefined buffer (a black or garbage flash) until then.
+    shown: bool,
 }
 
 // SAFETY: the presenter is created on one thread and then used by the render thread alone; the
@@ -99,9 +102,7 @@ impl DxgiPresenter {
         // SAFETY: the device and descriptor are valid.
         let chain = unsafe { factory.CreateSwapChainForComposition(&device, &desc, None) }
             .map_err(|error| backend("CreateSwapChainForComposition", error))?;
-        // SAFETY: the panel is alive (we hold a reference) and the chain pointer is valid.
-        unsafe { panel.SetSwapChain(chain.as_raw()) }.ok().map_err(|error| backend("SetSwapChain", error))?;
-        Ok(Self { panel, context, chain, width, height, previous: None, full_frames: BUFFERS })
+        Ok(Self { panel, context, chain, width, height, previous: None, full_frames: BUFFERS, shown: false })
     }
 }
 
@@ -167,6 +168,11 @@ impl Presenter for DxgiPresenter {
             _ => unsafe { self.chain.Present(1, DXGI_PRESENT(0)) },
         };
         result.ok().map_err(|error| backend("Present", error))?;
+        if !self.shown {
+            // SAFETY: the panel is alive (we hold a reference) and the chain pointer is valid.
+            unsafe { self.panel.SetSwapChain(self.chain.as_raw()) }.ok().map_err(|error| backend("SetSwapChain", error))?;
+            self.shown = true;
+        }
         self.previous = dirty;
         self.full_frames = self.full_frames.saturating_sub(1);
         Ok(())

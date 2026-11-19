@@ -5,6 +5,7 @@ import {
   editHost,
   newHost,
   openFiles,
+  openAudit,
   parseQuickConnect,
   removeHost,
   saveHost,
@@ -12,9 +13,11 @@ import {
   type HostData,
   type VaultRecord, importScanned, refresh, scanImport, type ImportHost, type ImportScan, type ImportSource } from "../state/store";
 import { AgentCard } from "./AgentCard";
+import { AuditCard, AuditChip } from "./Audit";
 import { Glyph } from "../ui/icons";
 import { ANDROID, Action, compact, dialogWidth, Field, gutter, Hint, IconAction, Label, Segments, TextField, mono, relativeTime, touch } from "../ui/kit";
 import { color, labels, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 let quick = "";
 /** Whether the title bar has room for the quick-connect field; the hosts page shows it otherwise. */
@@ -56,13 +59,13 @@ export function QuickConnect({ bar = false }: { bar?: boolean }) {
     : { flex: 1, minWidth: 0, padding: { left: 34, right: 10 }, ...mono, fontSize: 12.5 };
   return (
     <Row flex={1} align="center" style={{ position: "relative", minWidth: 0, overflow: "hidden" }}>
-      <TextField id="quick-connect" value={quick} placeholder={bar ? "ssh user@host:port" : "Connect to user@host:port"} onChange={value => { quick = value; }} onSubmit={quickConnect} style={style} />
+      <TextField id="quick-connect" value={quick} placeholder={bar ? "ssh user@host:port" : t("Connect to user@host:port")} onChange={value => { quick = value; }} onSubmit={quickConnect} style={style} />
       <Row style={{ position: "absolute", left: 11, pointerEvents: "none" }}>
         <Glyph name="terminal" size={bar ? 13 : 14} color={parsed ? color.accent : color.faint} />
       </Row>
       {bar && parsed ? (
         <Row style={{ position: "absolute", right: 6, height: 18, padding: { left: 6, right: 6 }, radius: 5, background: color.raised, align: "center", pointerEvents: "none" }}>
-          <Text size={10.5} weight={600} color={color.muted}>Enter</Text>
+          <Text size={10.5} weight={600} color={color.muted}>{t("Enter")}</Text>
         </Row>
       ) : null}
     </Row>
@@ -74,6 +77,7 @@ function HostRow({ host }: { host: VaultRecord<HostData> }) {
   const active = hovered === host.id || ui.editing?.id === host.id;
   const narrow = compact();
   const jump = data.jump ? ui.hosts.find(other => other.id === data.jump)?.data.name : undefined;
+  const audit = ui.auditSettings.enabled;
   return (
     <Pressable
       key={host.id}
@@ -103,20 +107,22 @@ function HostRow({ host }: { host: VaultRecord<HostData> }) {
           {jump && !narrow ? (
             <Row gap={4} align="center" style={{ shrink: 0 }}>
               <Glyph name="route" size={12} color={color.faint} />
-              <Text size={11.5} color={color.faint} style={{ whiteSpace: "nowrap" }}>{`via ${jump}`}</Text>
+              <Text size={11.5} color={color.faint} style={{ whiteSpace: "nowrap" }}>{t("via {jump}", { jump })}</Text>
             </Row>
           ) : null}
         </Row>
       </Column>
       <Row gap={6} align="center">
+        {audit ? <AuditChip hostId={host.id} /> : null}
         {data.key ? <Glyph name="key" size={13} color={color.faint} /> : null}
         {narrow ? null : <Text size={11.5} color={color.faint} style={{ width: 84, textAlign: "end", whiteSpace: "nowrap" }}>{relativeTime(data.lastConnected)}</Text>}
       </Row>
       {/* A finger has no hover: the buttons stay visible, and the row itself connects. */}
-      <Row gap={2} style={{ opacity: active || touch() ? 1 : 0, width: narrow ? undefined : 96, shrink: 0, justify: "end" }}>
-        <IconAction icon="folder" label={`Files on ${data.name}`} onClick={() => openFiles(host.id)} />
-        <IconAction icon="pencil" label={`Edit ${data.name}`} onClick={() => editHost(host.id)} />
-        {narrow ? null : <IconAction icon="play" label={`Connect to ${data.name}`} color={color.accent} onClick={() => connect(host.id)} />}
+      <Row gap={2} style={{ opacity: active || touch() ? 1 : 0, width: narrow ? undefined : audit ? 128 : 96, shrink: 0, justify: "end" }}>
+        {audit && !ui.audits[host.id] && ui.auditRuns[host.id]?.state !== "running" ? <IconAction icon="shield" label={t("Security audit of {name}", { name: data.name })} onClick={() => openAudit(host.id)} /> : null}
+        <IconAction icon="folder" label={t("Files on {name}", { name: data.name })} onClick={() => openFiles(host.id)} />
+        <IconAction icon="pencil" label={t("Edit {name}", { name: data.name })} onClick={() => editHost(host.id)} />
+        {narrow ? null : <IconAction icon="play" label={t("Connect to {name}", { name: data.name })} color={color.accent} onClick={() => connect(host.id)} />}
       </Row>
     </Pressable>
   );
@@ -128,7 +134,7 @@ let importScan: ImportScan | undefined;
 let importChosen = new Set<string>();
 let importKeys = true;
 
-const sources: readonly { value: ImportSource; label: string }[] = [
+const sources = (): { value: ImportSource; label: string }[] => [
   { value: "sshConfig", label: "~/.ssh/config" },
   { value: "filezilla", label: "FileZilla" },
   { value: "termius", label: "Termius" },
@@ -166,21 +172,21 @@ function reach(host: ImportHost): string {
 
 function emptyText(): string {
   if (ui.error) return ui.error;
-  if (importSource === "filezilla") return importScan?.skipped ? `FileZilla has ${importScan.skipped} sites, none of them SFTP: only SFTP sites are SSH servers.` : "FileZilla's Site Manager has no sites.";
-  if (importSource === "termius") return importScan?.skipped ? `Termius has ${importScan.skipped} entries that could not be read: it may have changed how it stores them.` : "Termius has no saved hosts: log in to Termius once on this computer.";
-  return "No named hosts in ~/.ssh/config: a Host line with * or ? describes a pattern, not a server.";
+  if (importSource === "filezilla") return importScan?.skipped ? t("FileZilla has {count} sites, none of them SFTP: only SFTP sites are SSH servers.", { count: importScan.skipped }) : t("FileZilla's Site Manager has no sites.");
+  if (importSource === "termius") return importScan?.skipped ? t("Termius has {count} entries that could not be read: it may have changed how it stores them.", { count: importScan.skipped }) : t("Termius has no saved hosts: log in to Termius once on this computer.");
+  return t("No named hosts in ~/.ssh/config: a Host line with * or ? describes a pattern, not a server.");
 }
 
 function summary(scan: ImportScan): string {
-  const skipped = scan.skipped ? `, ${scan.skipped} skipped (not SSH)` : "";
-  return `${scan.hosts.length} hosts${skipped}`;
+  const skipped = scan.skipped ? ", " + t("{count} skipped (not SSH)", { count: scan.skipped }) : "";
+  return t("{count} hosts{skipped}", { count: scan.hosts.length, skipped });
 }
 
 /** Hosts saved by OpenSSH, FileZilla or Termius, ticked off before they are saved into the vault. */
 function ImportHosts() {
   const hosts = importScan?.hosts ?? [];
   const chosen = hosts.filter(host => importChosen.has(host.key));
-  const label = chosen.length === 1 ? "Import 1 host" : `Import ${chosen.length} hosts`;
+  const label = chosen.length === 1 ? t("Import 1 host") : t("Import {count} hosts", { count: chosen.length });
   const from = importScan?.source ?? importSource;
   const withKeys = hosts.some(host => host.identityFile || host.hasKey);
   const allOn = hosts.length > 0 && chosen.length === hosts.length;
@@ -188,18 +194,18 @@ function ImportHosts() {
     <Modal
       open={importOpen}
       onOpenChange={open => { importOpen = open; refresh(); }}
-      title="Import hosts"
+      title={t("Import hosts")}
       width={dialogWidth(620)}
       footer={
         <Row gap={8} justify="end">
-          <Action label="Cancel" onClick={() => { importOpen = false; refresh(); }} />
+          <Action label={t("Cancel")} onClick={() => { importOpen = false; refresh(); }} />
           <Action tone="primary" icon="download" label={label} disabled={chosen.length === 0} onClick={() => { importOpen = false; importScanned(chosen.map(host => host.key), importKeys, from); }} />
         </Row>
       }
     >
       <Column gap={14}>
         <Row gap={10} align="center">
-          <Segments value={importSource} options={sources} onChange={value => { void scan(value); }} />
+          <Segments value={importSource} options={sources()} onChange={value => { void scan(value); }} />
         </Row>
         {importScan ? <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{importScan.path}</Text> : null}
         {hosts.length === 0 ? (
@@ -208,7 +214,7 @@ function ImportHosts() {
           <Column gap={6}>
             <Row align="center" justify="between">
               <Text size={12} color={color.muted}>{summary(importScan!)}</Text>
-              <Action label={allOn ? "Select none" : "Select all"} onClick={() => { importChosen = new Set(allOn ? [] : hosts.map(host => host.key)); refresh(); }} />
+              <Action label={allOn ? t("Select none") : t("Select all")} onClick={() => { importChosen = new Set(allOn ? [] : hosts.map(host => host.key)); refresh(); }} />
             </Row>
             <Scroll style={{ maxHeight: 300 }}>
               <Column gap={2}>
@@ -240,7 +246,7 @@ function ImportHosts() {
                         </Row>
                         <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{reach(host)}</Text>
                       </Column>
-                      {host.exists ? <Text size={11} color={color.warn}>already saved</Text> : null}
+                      {host.exists ? <Text size={11} color={color.warn}>{t("already saved")}</Text> : null}
                       {host.hasPassword ? <Glyph name="lock" size={13} color={color.faint} /> : null}
                       {host.identityFile || host.hasKey ? <Glyph name="key" size={13} color={color.faint} /> : null}
                     </Pressable>
@@ -252,16 +258,16 @@ function ImportHosts() {
         )}
         {withKeys ? (
           <Column gap={6}>
-            <Label>Key files</Label>
+            <Label>{t("Key files")}</Label>
             <Segments
               value={importKeys ? "keys" : "hosts"}
-              options={[{ value: "hosts", label: "Hosts only" }, { value: "keys", label: "Import keys too" }]}
+              options={[{ value: "hosts", label: t("Hosts only") }, { value: "keys", label: t("Import keys too") }]}
               onChange={value => { importKeys = value === "keys"; refresh(); }}
             />
-            <Hint>Key files the hosts name are copied into the vault; encrypted ones are left where they are. Keys kept inside Termius come with their passphrase.</Hint>
+            <Hint>{t("Key files the hosts name are copied into the vault; encrypted ones are left where they are. Keys kept inside Termius come with their passphrase.")}</Hint>
           </Column>
         ) : null}
-        <Hint>Saved passwords come along, encrypted in the vault. FileZilla passwords behind its master password cannot be read: those hosts come without one. Termius has no export: its hosts are read from the app's own data.</Hint>
+        <Hint>{t("Saved passwords come along, encrypted in the vault. FileZilla passwords behind its master password cannot be read: those hosts come without one. Termius has no export: its hosts are read from the app's own data.")}</Hint>
       </Column>
     </Modal>
   );
@@ -270,13 +276,13 @@ function ImportHosts() {
 function Empty() {
   return (
     <Column flex={1} align="center" justify="center" gap={10} style={{ padding: compact() ? 20 : 40 }}>
-      <Text size={17} weight={650} color={color.text}>No hosts yet</Text>
+      <Text size={17} weight={650} color={color.text}>{t("No hosts yet")}</Text>
       <Text size={13} color={color.muted} style={{ textAlign: "center", maxWidth: 380, lineHeight: 1.5 }}>
-        Type user@server above and press Enter, or add one with its password or key. Everything you save is encrypted in your vault.
+        {t("Type user@server above and press Enter, or add one with its password or key. Everything you save is encrypted in your vault.")}
       </Text>
       <Row style={{ margin: { top: 8 } }} gap={8}>
-        {ANDROID ? null : <Action icon="download" label="Import" onClick={openImport} />}
-        <Action tone="primary" icon="plus" label="New host" onClick={() => newHost()} />
+        {ANDROID ? null : <Action icon="download" label={t("Import")} onClick={openImport} />}
+        <Action tone="primary" icon="plus" label={t("New host")} onClick={() => newHost()} />
       </Row>
     </Column>
   );
@@ -287,93 +293,100 @@ function Editor() {
   const data = editing.data;
   const usesKey = Boolean(data.key);
   const keyOptions = ui.keys.map(key => ({ value: key.id, label: `${key.data.name} · ${key.data.algorithm}` }));
-  const jumpOptions = [{ value: "", label: "Direct connection" }, ...ui.hosts.filter(host => host.id !== editing.id).map(host => ({ value: host.id, label: host.data.name }))];
+  const jumpOptions = [{ value: "", label: t("Direct connection") }, ...ui.hosts.filter(host => host.id !== editing.id).map(host => ({ value: host.id, label: host.data.name }))];
   return (
     <Column style={compact()
       // A phone has no room beside the list: the editor covers it.
       ? { position: "absolute", left: 0, top: 0, right: 0, bottom: 0, background: color.panel }
       : { width: 360, shrink: 1, minWidth: 300, background: color.panel, borderColor: color.line, borderWidth: { left: 1 } }}>
       <Row align="center" justify="between" style={{ height: 56, padding: { left: 20, right: 12 } }}>
-        <Text size={15} weight={650} color={color.text}>{editing.id ? "Edit host" : "New host"}</Text>
-        <IconAction icon="x" label="Close" onClick={() => { ui.editing = undefined; ui.error = undefined; }} />
+        <Text size={15} weight={650} color={color.text}>{editing.id ? t("Edit host") : t("New host")}</Text>
+        <IconAction icon="x" label={t("Close")} onClick={() => { ui.editing = undefined; ui.error = undefined; }} />
       </Row>
       <Scroll flex={1}>
         <Column gap={16} style={{ padding: { left: 20, right: 20, bottom: 20 } }}>
-          <Field id="host-name" label="Name" value={data.name} placeholder="Production API" onChange={value => { data.name = value; }} />
+          <Field id="host-name" label={t("Name")} value={data.name} placeholder={t("Production API")} onChange={value => { data.name = value; }} />
           <Row gap={10}>
-            <Field label="Address" value={data.address} placeholder="203.0.113.10 or host.example.com" monospace grow={3} onChange={value => { data.address = value; }} />
-            <Field label="Port" value={String(data.port ?? 22)} monospace grow={1} onChange={value => { const port = Number(value.replace(/\D/g, "")); data.port = port || undefined; }} />
+            <Field label={t("Address")} value={data.address} placeholder={t("203.0.113.10 or host.example.com")} monospace grow={3} onChange={value => { data.address = value; }} />
+            {/* Empty while cleared, not a re-filled "22" that the next keystrokes append to ("22" + "121"). */}
+            <Field label={t("Port")} value={data.port ? String(data.port) : ""} placeholder="22" monospace grow={1} onChange={value => { const port = Number(value.replace(/\D/g, "").slice(0, 5)); data.port = port > 0 && port <= 65535 ? port : undefined; }} />
           </Row>
-          <Field label="User" value={data.user ?? ""} placeholder="root" monospace onChange={value => { data.user = value; }} />
+          <Field label={t("User")} value={data.user ?? ""} placeholder="root" monospace onChange={value => { data.user = value; }} />
           <Column gap={8}>
-            <Label>Sign in with</Label>
+            <Label>{t("Sign in with")}</Label>
             <Segments
               value={usesKey ? "key" : "password"}
-              options={[{ value: "password", label: "Password" }, { value: "key", label: "Key" }]}
+              options={[{ value: "password", label: t("Password") }, { value: "key", label: t("Key") }]}
               onChange={value => { data.key = value === "key" ? (ui.keys[0]?.id ?? "") : undefined; }}
             />
             {usesKey || data.key === "" ? (
               keyOptions.length ? (
-                <Select style={{ width: "100%" }} id="host-key" value={data.key || undefined} options={keyOptions} placeholder="Choose a key" onValueChange={value => { data.key = value; }} />
+                <Select style={{ width: "100%" }} id="host-key" value={data.key || undefined} options={keyOptions} placeholder={t("Choose a key")} onValueChange={value => { data.key = value; }} />
               ) : (
-                <Hint>No keys yet. Create or import one under Keychain.</Hint>
+                <Hint>{t("No keys yet. Create or import one under Keychain.")}</Hint>
               )
             ) : (
               <TextField
                 type="password"
                 value={data.password ?? ""}
-                placeholder={data.hasPassword ? "Saved. Type to replace it" : "Password"}
+                placeholder={data.hasPassword ? t("Saved. Type to replace it") : t("Password")}
                 onChange={value => { data.password = value; }}
               />
             )}
           </Column>
           <Column gap={6}>
-            <Label>Jump host</Label>
+            <Label>{t("Jump host")}</Label>
             <Select style={{ width: "100%" }} id="host-jump" value={data.jump ?? ""} options={jumpOptions} onValueChange={value => { data.jump = value || undefined; }} />
-            <Hint>Reach this server through another one, like ProxyJump.</Hint>
+            <Hint>{t("Reach this server through another one, like ProxyJump.")}</Hint>
           </Column>
           <Column gap={6}>
-            <Label>Session</Label>
+            <Label>{t("Session")}</Label>
             <Segments
               value={data.agent === false ? "ssh" : "agent"}
-              options={[{ value: "agent", label: "Resumable" }, { value: "ssh", label: "Plain SSH" }]}
+              options={[{ value: "agent", label: t("Resumable") }, { value: "ssh", label: t("Plain SSH") }]}
               onChange={value => { data.agent = value === "agent"; }}
             />
-            <Hint>{data.agent === false ? "A standard SSH channel: works everywhere, ends when the link drops." : "Runs through termio-agent over QUIC; plain SSH when the server lacks it."}</Hint>
+            <Hint>{data.agent === false ? t("A standard SSH channel: works everywhere, ends when the link drops.") : t("Runs through termio-agent over QUIC; plain SSH when the server lacks it.")}</Hint>
             {data.agent !== false && editing.id && !ANDROID ? <AgentCard hostId={editing.id} /> : null}
-            {data.agent !== false && ANDROID ? <Hint>Install the agent on the server from Termio on a computer; this phone then resumes through it.</Hint> : null}
+            {data.agent !== false && ANDROID ? <Hint>{t("Install the agent on the server from Termio on a computer; this phone then resumes through it.")}</Hint> : null}
             </Column>
+          {ui.auditSettings.enabled && editing.id ? (
+            <Column gap={6}>
+              <Label>{t("Security")}</Label>
+              <AuditCard hostId={editing.id} />
+            </Column>
+          ) : null}
           {/* No ssh-agent runs on Android. */}
           {ANDROID ? null : (
             <Column gap={6}>
-              <Label>ssh-agent</Label>
+              <Label>{t("ssh-agent")}</Label>
               <Segments
                 value={data.useAgent ? "on" : "off"}
-                options={[{ value: "off", label: "Off" }, { value: "on", label: "On" }]}
+                options={[{ value: "off", label: t("Off") }, { value: "on", label: t("On") }]}
                 onChange={value => { data.useAgent = value === "on"; }}
               />
-              <Hint>Sign in with the keys your ssh-agent holds, the way ssh itself does.</Hint>
+              <Hint>{t("Sign in with the keys your ssh-agent holds, the way ssh itself does.")}</Hint>
             </Column>
           )}
           <Column gap={8}>
             <Row align="center" justify="between">
-              <Label>Port forwarding</Label>
-              <IconAction icon="plus" label="Add a forward" onClick={() => { data.forwards = [...(data.forwards ?? []), { local: 8080, host: "127.0.0.1", port: 80 }]; }} />
+              <Label>{t("Port forwarding")}</Label>
+              <IconAction icon="plus" label={t("Add a forward")} onClick={() => { data.forwards = [...(data.forwards ?? []), { local: 8080, host: "127.0.0.1", port: 80 }]; }} />
             </Row>
             {(data.forwards ?? []).map((rule, index) => (
               <Row key={String(index)} gap={6} align="center">
-                <TextField value={String(rule.local || "")} placeholder="Local" onChange={value => { rule.local = Number(value.replace(/\D/g, "")); }} style={{ width: 70, ...mono, fontSize: 12 }} />
+                <TextField value={String(rule.local || "")} placeholder={t("Local")} onChange={value => { rule.local = Number(value.replace(/\D/g, "")); }} style={{ width: 70, ...mono, fontSize: 12 }} />
                 <Glyph name="route" size={13} color={color.faint} />
                 <TextField value={rule.host} placeholder="127.0.0.1" onChange={value => { rule.host = value; }} style={{ flex: 1, ...mono, fontSize: 12 }} />
-                <TextField value={String(rule.port || "")} placeholder="Port" onChange={value => { rule.port = Number(value.replace(/\D/g, "")); }} style={{ width: 64, ...mono, fontSize: 12 }} />
-                <IconAction icon="x" label="Remove this forward" onClick={() => { data.forwards = (data.forwards ?? []).filter((_, other) => other !== index); }} />
+                <TextField value={String(rule.port || "")} placeholder={t("Port")} onChange={value => { rule.port = Number(value.replace(/\D/g, "")); }} style={{ width: 64, ...mono, fontSize: 12 }} />
+                <IconAction icon="x" label={t("Remove this forward")} onClick={() => { data.forwards = (data.forwards ?? []).filter((_, other) => other !== index); }} />
               </Row>
             ))}
-            <Hint>{data.forwards?.length ? "localhost:local on this computer reaches host:port as the server sees it, while the session is open." : "Reach a database or dashboard behind the server, like ssh -L."}</Hint>
+            <Hint>{data.forwards?.length ? t("localhost:local on this computer reaches host:port as the server sees it, while the session is open.") : t("Reach a database or dashboard behind the server, like ssh -L.")}</Hint>
           </Column>
-          <Field label="Group" value={data.group ?? ""} placeholder="Ungrouped" onChange={value => { data.group = value; }} />
+          <Field label={t("Group")} value={data.group ?? ""} placeholder={t("Ungrouped")} onChange={value => { data.group = value; }} />
           <Column gap={8}>
-            <Label>Label</Label>
+            <Label>{t("Label")}</Label>
             <Row gap={8}>
               {Object.entries(labels).map(([name, swatch]) => (
                 <Pressable
@@ -390,10 +403,10 @@ function Editor() {
         </Column>
       </Scroll>
       <Row gap={8} align="center" style={{ padding: 16, borderColor: color.line, borderWidth: { top: 1 } }}>
-        {editing.id ? <Action tone="danger" icon="trash" label="Delete" onClick={() => removeHost(editing.id!)} /> : null}
+        {editing.id ? <Action tone="danger" icon="trash" label={t("Delete")} onClick={() => removeHost(editing.id!)} /> : null}
         <Row flex={1} />
-        <Action label="Cancel" onClick={() => { ui.editing = undefined; ui.error = undefined; }} />
-        <Action tone="primary" label="Save" onClick={saveHost} />
+        <Action label={t("Cancel")} onClick={() => { ui.editing = undefined; ui.error = undefined; }} />
+        <Action tone="primary" label={t("Save")} onClick={saveHost} />
       </Row>
     </Column>
   );
@@ -402,7 +415,7 @@ function Editor() {
 type Order = "recent" | "name" | "group";
 /** How the list is ordered: the hosts used last come first unless the user picks otherwise. */
 let order: Order = "recent";
-const ORDERS: readonly { value: Order; label: string }[] = [
+const ORDERS = (): { value: Order; label: string }[] => [
   { value: "recent", label: "Recent" },
   { value: "name", label: "Name" },
   { value: "group", label: "Group" },
@@ -426,7 +439,7 @@ function sections(visible: VaultRecord<HostData>[]): [string, VaultRecord<HostDa
 function HostFilter() {
   return (
     <Row flex={1} style={{ maxWidth: compact() ? undefined : 480, minWidth: 0, overflow: "hidden", position: "relative" }} align="center">
-      <TextField id="host-search" value={ui.search} placeholder="Filter" onChange={value => { ui.search = value; }} style={{ flex: 1, minWidth: 0, padding: { left: 32, right: 10 } }} />
+      <TextField id="host-search" value={ui.search} placeholder={t("Filter")} onChange={value => { ui.search = value; }} style={{ flex: 1, minWidth: 0, padding: { left: 32, right: 10 } }} />
       <Row style={{ position: "absolute", left: 10, pointerEvents: "none" }}>
         <Glyph name="search" size={14} color={color.faint} />
       </Row>
@@ -444,13 +457,13 @@ export function Hosts() {
         <Column gap={14} style={{ padding: { top: narrow ? 14 : 22, left: gutter(), right: gutter(), bottom: 14 } }}>
           <Row align="center" justify="between">
             <Row gap={10} align="center">
-              <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>Hosts</Text>
+              <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>{t("Hosts")}</Text>
               <Text size={13} color={color.faint}>{String(ui.hosts.length)}</Text>
             </Row>
             <Row gap={8} align="center">
               {/* Android has no ~/.ssh/config, FileZilla or Termius data to read. */}
-              {ANDROID ? null : narrow ? <IconAction icon="download" label="Import" onClick={openImport} /> : <Action icon="download" label="Import" onClick={openImport} />}
-              <Action tone="primary" icon="plus" label={narrow ? "New" : "New host"} onClick={() => newHost()} />
+              {ANDROID ? null : narrow ? <IconAction icon="download" label={t("Import")} onClick={openImport} /> : <Action icon="download" label={t("Import")} onClick={openImport} />}
+              <Action tone="primary" icon="plus" label={narrow ? t("New") : t("New host")} onClick={() => newHost()} />
             </Row>
           </Row>
           {/* The title bar holds it when it has room: never on a phone, nor beside many tabs. */}
@@ -458,8 +471,8 @@ export function Hosts() {
           <Row style={{ minWidth: 0 }}><HostFilter /></Row>
           {ui.hosts.length > 0 ? (
             <Row gap={10} align="center">
-              <Text size={12} color={color.faint}>Sort</Text>
-              <Segments value={order} options={ORDERS} onChange={value => { order = value; }} />
+              <Text size={12} color={color.faint}>{t("Sort")}</Text>
+              <Segments value={order} options={ORDERS()} onChange={value => { order = value; }} />
             </Row>
           ) : null}
         </Column>
@@ -471,12 +484,12 @@ export function Hosts() {
               {ordered.map(([group, hosts]) => (
                 <Column key={group || "-"} gap={2}>
                   <Row style={{ padding: { left: 14, bottom: 6 } }}>
-                    <Text size={11.5} weight={650} color={color.faint}>{order === "recent" ? "Recently used" : order === "name" ? "All hosts" : group || (ordered.length > 1 ? "Ungrouped" : "All hosts")}</Text>
+                    <Text size={11.5} weight={650} color={color.faint}>{order === "recent" ? t("Recently used") : order === "name" ? t("All hosts") : group || (ordered.length > 1 ? t("Ungrouped") : t("All hosts"))}</Text>
                   </Row>
                   {hosts.map(host => <HostRow key={host.id} host={host} />)}
                 </Column>
               ))}
-              {visible.length === 0 ? <Row style={{ padding: 14 }}><Text size={13} color={color.muted}>{`Nothing matches "${ui.search}".`}</Text></Row> : null}
+              {visible.length === 0 ? <Row style={{ padding: 14 }}><Text size={13} color={color.muted}>{t("Nothing matches \"{query}\".", { query: ui.search })}</Text></Row> : null}
             </Column>
           </Scroll>
         )}

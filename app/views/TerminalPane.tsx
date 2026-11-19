@@ -5,6 +5,7 @@ import { dialogs, previewAppearance, refresh, saveAppearance, toast, ui } from "
 import { Glyph } from "../ui/icons";
 import { mono, touch } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 /** The node id of a session's surface: pointer and keyboard events name it. */
 export const terminalNodeId = (session: number) => `terminal-${session}`;
@@ -124,7 +125,7 @@ export function SoftKeyboard({ session }: { session: number }) {
       <Pressable
         focusable={false}
         onClick={() => openKeyboard(session)}
-        control={{ role: "button", label: "Show keyboard" }}
+        control={{ role: "button", label: t("Show keyboard") }}
         style={{ width: 44, height: 40, shrink: 0, align: "center", justify: "center", borderColor: color.line, borderWidth: { right: 1 } }}
       >
         <Glyph name="terminal" size={17} color={color.accent} />
@@ -135,7 +136,7 @@ export function SoftKeyboard({ session }: { session: number }) {
         control={{ role: "button", label: "Paste" }}
         style={{ height: 40, shrink: 0, padding: { left: 10, right: 10 }, align: "center", justify: "center", borderColor: color.line, borderWidth: { right: 1 } }}
       >
-        <Text size={12.5} weight={600} color={color.muted}>Paste</Text>
+        <Text size={12.5} weight={600} color={color.muted}>{t("Paste")}</Text>
       </Pressable>
       <Scroll orientation="horizontal" flex={1} style={{ minWidth: 0, height: 40, overflow: "hidden", scrollbarWidth: "none" }}>
         <Row gap={4} align="center" style={{ height: 40, padding: { left: 6, right: 6 } }}>
@@ -360,7 +361,7 @@ function Handle({ session, which, at }: { session: number; which: "start" | "end
       onDragStart={position => handleStart(session, which, position)}
       onDragMove={event => handleMove(event)}
       onDragEnd={() => { dragging = undefined; }}
-      control={{ role: "button", label: which === "start" ? "Selection start" : "Selection end" }}
+      control={{ role: "button", label: which === "start" ? t("Selection start") : t("Selection end") }}
       style={{ position: "absolute", cursor: "grab", left: Math.max(0, Math.min(dropX - pad, state.width - HANDLE - pad * 2)), top, width: HANDLE + pad * 2, height: HANDLE + pad, padding: { left: Math.min(pad, Math.max(0, dropX)), right: pad, bottom: pad } }}
     >
       <Row style={{ width: HANDLE, height: HANDLE, background: color.accent, radius: pointsLeft ? { topLeft: 0, topRight: round, bottomLeft: round, bottomRight: round } : { topLeft: round, topRight: 0, bottomLeft: round, bottomRight: round } }} />
@@ -372,7 +373,7 @@ function Handle({ session, which, at }: { session: number; which: "start" | "end
 function copySelection(session: number): void {
   const shown = selections.get(session);
   if (!shown) return;
-  clipboard.writeText(shown.text).then(() => toast("Copied"), () => toast("Could not reach the clipboard", "error"));
+  clipboard.writeText(shown.text).then(() => toast(t("Copied")), () => toast(t("Could not reach the clipboard"), "error"));
   clearSelection(session);
 }
 
@@ -405,9 +406,9 @@ export function SelectionOverlay({ session }: { session: number }) {
         align="center"
         style={{ position: "absolute", left, top, height: 44, padding: { left: 2, right: 2 }, background: color.raised, radius: 22, borderColor: color.lineStrong, borderWidth: 1, boxShadow: { y: 6, blur: 18, color: "#00000080" } }}
       >
-        <ToolbarAction label="Copy" onClick={() => copySelection(session)} />
-        <ToolbarAction label="Paste" onClick={() => { clearSelection(session); paste(session); }} />
-        <ToolbarAction label="Select all" onClick={() => { select(session, "all"); refresh(); }} />
+        <ToolbarAction label={t("Copy")} onClick={() => copySelection(session)} />
+        <ToolbarAction label={t("Paste")} onClick={() => { clearSelection(session); paste(session); }} />
+        <ToolbarAction label={t("Select all")} onClick={() => { select(session, "all"); refresh(); }} />
       </Row>
     </>
   );
@@ -437,14 +438,14 @@ function onSurface(session: number, event: SurfaceEvent): void {
   } else if (event.type === "ready" && event.handle) {
     const kind = event.handleType ? SURFACE_KIND[event.handleType as keyof typeof SURFACE_KIND] : undefined;
     if (kind === undefined) {
-      dispatchCoreEvent({ type: "surface.error", session, message: `surface type ${event.handleType} is not supported` });
+      dispatchCoreEvent({ type: "surface.error", session, message: t("surface type {type} is not supported", { type: event.handleType }) });
       return;
     }
     core().attach(session, BigInt(event.handle), kind, event.width, event.height, event.scale);
   } else {
     core().detach(session);
     if (event.type === "destroyed") panes.delete(session);
-    if (event.type === "unsupported") dispatchCoreEvent({ type: "surface.error", session, message: event.message ?? "surface unsupported" });
+    if (event.type === "unsupported") dispatchCoreEvent({ type: "surface.error", session, message: event.message ?? t("surface unsupported") });
   }
 }
 

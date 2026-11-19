@@ -2,6 +2,7 @@ import { checkForUpdate, openExternal, type Update } from "@tarve/core";
 import type { canInstallUpdate, downloadUpdate, installUpdate } from "@tarve/core";
 import pkg from "../../package.json";
 import { refresh, toast } from "./store";
+import { t } from "../i18n";
 
 /**
  * Updates from GitHub Releases. Each release carries a `latest.json` signed with the key from
@@ -42,7 +43,7 @@ async function githubFetch(input: string | URL | Request, init?: RequestInit): P
   if (!release.ok) return release;
   const assets = ((await release.json()) as { assets?: { name: string; url: string }[] }).assets ?? [];
   const asset = assets.find(item => item.name === decodeURIComponent(file!));
-  if (!asset) return new Response(`No ${file} in the release`, { status: 404 });
+  if (!asset) return new Response(t("No {file} in the release", { file }), { status: 404 });
   const response = await fetch(asset.url, { signal: init?.signal, redirect: "manual", headers: { ...auth, accept: "application/octet-stream" } });
   const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
   return location ? fetch(location, { signal: init?.signal }) : response;
@@ -100,12 +101,12 @@ export async function checkUpdates(quiet = false): Promise<void> {
     updates.update = found ?? undefined;
     updates.state = found ? "available" : "current";
     updates.checkedAt = Date.now();
-    if (found && (fresh || !quiet)) toast(`Termio ${found.version} is available: Settings › About`);
-    else if (!quiet) toast("Termio is up to date");
+    if (found && (fresh || !quiet)) toast(t("Termio {version} is available: Settings › About", { version: found.version }));
+    else if (!quiet) toast(t("Termio is up to date"));
   } catch (error) {
     updates.state = "error";
     updates.error = message(error);
-    if (!quiet) toast(`Update check failed: ${updates.error}`, "error");
+    if (!quiet) toast(t("Update check failed: {error}", { error: updates.error }), "error");
   }
   refresh();
 }
@@ -137,13 +138,13 @@ export async function applyUpdate(): Promise<void> {
   } catch (error) {
     updates.state = "error";
     updates.error = message(error);
-    toast(`Update failed: ${updates.error}`, "error");
+    toast(t("Update failed: {error}", { error: updates.error }), "error");
     refresh();
   }
 }
 
 export function openPage(url = releasePage()): void {
-  try { openExternal(url); } catch (error) { toast(`Could not open ${url}: ${message(error)}`, "error"); }
+  try { openExternal(url); } catch (error) { toast(t("Could not open {url}: {error}", { url, error: message(error) }), "error"); }
 }
 
 let started = false;

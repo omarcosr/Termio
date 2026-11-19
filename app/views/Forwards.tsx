@@ -3,6 +3,7 @@ import { connect, editHost, ui } from "../state/store";
 import { Glyph } from "../ui/icons";
 import { compact, gutter, Action, IconAction, mono } from "../ui/kit";
 import { color, labels, radius } from "../ui/tokens";
+import { t } from "../i18n";
 
 /** Every port forward of every host, with its live state when a session to that host is open. */
 export function Forwards() {
@@ -20,15 +21,15 @@ export function Forwards() {
       <Column gap={16} style={{ padding: { top: 22, left: gutter(), right: gutter(), bottom: 28 } }}>
         <Column gap={4}>
           <Row gap={10} align="center">
-            <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>Port forwarding</Text>
+            <Text size={20} weight={650} color={color.text} style={{ letterSpacing: -0.3 }}>{t("Port forwarding")}</Text>
             <Text size={13} color={color.faint}>{String(rows.length)}</Text>
           </Row>
-          <Text size={13} color={color.muted}>Tunnels come up with a session to their host, like ssh -L. Add them in each host's settings.</Text>
+          <Text size={13} color={color.muted}>{t("Tunnels come up with a session to their host, like ssh -L. Add them in each host's settings.")}</Text>
         </Column>
         {rows.length === 0 ? (
           <Column gap={10} align="center" style={{ padding: compact() ? 24 : 48, radius: radius.panel, borderColor: color.line, borderWidth: 1 }}>
             <Glyph name="route" size={22} color={color.faint} />
-            <Text size={13} color={color.muted}>No forwards yet. Open a host and add one under Port forwarding.</Text>
+            <Text size={13} color={color.muted}>{t("No forwards yet. Open a host and add one under Port forwarding.")}</Text>
           </Column>
         ) : (
           <Column style={{ radius: radius.panel, borderColor: color.line, borderWidth: 1, background: color.panel }}>
@@ -45,7 +46,7 @@ export function Forwards() {
                       <Text size={13} weight={600} color={color.text} style={mono}>{`localhost:${rule.local}`}</Text>
                       <Row gap={5} align="center" style={{ minWidth: 0 }}>
                         <Glyph name="route" size={12} color={color.faint} />
-                        <Text size={12} color={color.muted} style={{ ...mono, shrink: 1, minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{`${rule.host}:${rule.port} · ${host.data.name}`}</Text>
+                        <Text size={12} color={color.muted} style={{ ...mono, shrink: 1, minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t("{destination} · {name}", { destination: `${rule.host}:${rule.port}`, name: host.data.name })}</Text>
                       </Row>
                     </Column>
                   ) : (
@@ -59,9 +60,9 @@ export function Forwards() {
                     <Row style={{ width: 6, height: 6, radius: 3, background: labels[host.data.color ?? "slate"] ?? labels.slate }} />
                     <Text size={12.5} color={color.muted} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{host.data.name}</Text>
                   </Row>}
-                  <Text size={12} color={tone} style={{ width: narrow ? undefined : 70, shrink: 0, whiteSpace: "nowrap" }}>{state === "up" ? "Active" : state === "error" ? "Failed" : state === "starting" ? "Starting" : "Off"}</Text>
-                  {state === "off" && !narrow ? <Action icon="play" label="Open" onClick={() => connect(host.id)} /> : null}
-                  <IconAction icon="pencil" label={`Edit ${host.data.name}`} onClick={() => { ui.view = "hosts"; editHost(host.id); }} />
+                  <Text size={12} color={tone} style={{ width: narrow ? undefined : 70, shrink: 0, whiteSpace: "nowrap" }}>{state === "up" ? t("Active") : state === "error" ? t("Failed") : state === "starting" ? t("Starting") : t("Off")}</Text>
+                  {state === "off" && !narrow ? <Action icon="play" label={t("Open")} onClick={() => connect(host.id)} /> : null}
+                  <IconAction icon="pencil" label={t("Edit {name}", { name: host.data.name })} onClick={() => { ui.view = "hosts"; editHost(host.id); }} />
                 </Row>
               );
             })}
