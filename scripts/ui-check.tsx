@@ -161,7 +161,7 @@ try {
   expandForTest("network.Redis listens on 0.0.0.0:6379, reachable from this device");
   await shot("audit-report", true);
   const report = ui.audits[audited]!;
-  ui.auditRuns[audited] = { state: "running", step: "Checking files…", at: Date.now() };
+  ui.auditRuns[audited] = { state: "running", step: { key: "audit.step.checking", text: "Checking files…", args: { category: "files" } }, at: Date.now() };
   delete ui.audits[audited];
   await shot("audit-running", true);
   delete ui.auditRuns[audited];

@@ -806,9 +806,10 @@ fn run_audit(host: String) -> Result<Value, String> {
     runtime().spawn(async move {
         let emit = {
             let host = host.clone();
-            move |state: &str, step: &str| events::emit(json!({ "type": "audit", "host": host, "state": state, "step": step }))
+            // `step` is the English text (older apps); `stepMessage` is what the UI translates.
+            move |state: &str, step: &crate::msg::Msg| events::emit(json!({ "type": "audit", "host": host, "state": state, "step": step.text(), "stepMessage": step.json() }))
         };
-        emit("running", "Connecting…");
+        emit("running", &crate::msg::tr!("audit.step.connecting", "Connecting…"));
         let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as u64);
         let started = now();
         let verifier: Arc<dyn Verifier> = Arc::new(VaultVerifier { session: 0 });
@@ -816,7 +817,7 @@ fn run_audit(host: String) -> Result<Value, String> {
         let output = termio_transport::ssh::exec_script(&target, verifier, "sh -s", &script, std::time::Duration::from_secs(900), move |section| progress("running", &crate::audit::step(section))).await;
         let output = match output {
             Ok(output) => output,
-            Err(error) => return emit("error", &error),
+            Err(error) => return emit("error", &crate::msg::Msg::raw(error)),
         };
         // A host behind a jump host is not reachable from here: no port probing.
         let address = target.jump.is_none().then(|| target.host.clone());
@@ -824,7 +825,7 @@ fn run_audit(host: String) -> Result<Value, String> {
         let analysis = tokio::task::spawn_blocking(move || crate::audit::analyze(&output, &options, address.as_deref(), &|step| progress("running", step))).await;
         let mut report = match analysis {
             Ok(report) => report,
-            Err(error) => return emit("error", &format!("the analysis failed: {error}")),
+            Err(error) => return emit("error", &crate::msg::tr!("audit.step.analysis-failed", "the analysis failed: {error}", error = error.to_string())),
         };
         report["host"] = json!(host);
         report["started"] = json!(started);

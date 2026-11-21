@@ -8,6 +8,7 @@ mod echo;
 mod events;
 mod importers;
 mod leveldb;
+mod msg;
 pub mod ffi;
 mod session;
 mod sshconfig;

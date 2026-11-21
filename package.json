@@ -36,7 +36,7 @@
     "publicKey": "QIRO33rI9MQnETST+fFfutRuU1gmdBk2rgTy68TWCXw="
   },
   "dependencies": {
-    "@tarve/core": "^0.13.4"
+    "@tarve/core": "0.13.5"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

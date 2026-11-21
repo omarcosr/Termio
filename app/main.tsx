@@ -223,4 +223,7 @@ app.onEvent(event => {
 await app.closed;
 // The window is gone but the update timer (setInterval), the core's threads and open sessions
 // would keep the process alive, invisible and without a tray icon. There is nothing left to show.
-process.exit(0);
+// A native failure (GPU lost, renderer error, panic) also closes the window: app.error holds it,
+// and the process must not exit 0 as if the user had closed it.
+if (app.error) console.error("[termio] the window ended with an error:", app.error);
+process.exit(app.error ? 1 : 0);

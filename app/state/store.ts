@@ -5,6 +5,7 @@ import { onCoreEvent, type CoreEvent } from "../core/events";
 import { core } from "../core/plugin";
 import { setPalette } from "../ui/tokens";
 import { plural, setLanguage, t, type Key, type LanguageChoice } from "../i18n";
+import type { Message } from "../i18n/messages";
 import { keepAlive, openExternal, secureStore, toast as showToast, type KeepAlive, clipboard, store } from "@tarve/core";
 
 export interface VaultRecord<T = Record<string, unknown>> {
@@ -1117,7 +1118,9 @@ export function listen(): void {
     case "audit": {
       const host = String(event.host);
       const state = String(event.state) as AuditRun["state"];
-      ui.auditRuns = { ...ui.auditRuns, [host]: { state, step: String(event.step ?? ""), at: Date.now() } };
+      // Older cores send only the English step.
+      const step = (event.stepMessage as Message | undefined) ?? { text: String(event.step ?? "") };
+      ui.auditRuns = { ...ui.auditRuns, [host]: { state, step, at: Date.now() } };
       const name = ui.hosts.find(record => record.id === host)?.data.name ?? t("the server");
       if (state === "done" && event.report) {
         ui.audits = { ...ui.audits, [host]: event.report as unknown as AuditReport };
@@ -1278,10 +1281,12 @@ export interface AuditFinding {
   /** "rule" (a check judged on this device), "osv", "osv-approx" (another distribution's data) or "vendor" (the server's own advisories). */
   source?: "rule" | "osv" | "osv-approx" | "vendor";
   severity: AuditSeverity;
+  /** English; `messages` holds what the UI translates (missing in reports from older versions). */
   title: string;
   detail: string;
   evidence: string;
   fix: string;
+  messages?: { title?: Message; detail?: Message; fix?: Message };
 }
 
 export interface AuditReport {
@@ -1299,7 +1304,7 @@ export interface AuditReport {
 
 export interface AuditRun {
   state: "running" | "done" | "error";
-  step: string;
+  step: Message;
   at: number;
 }
 
@@ -1328,9 +1333,9 @@ export function openAudit(hostId: string): void {
 
 /** Starts an audit; the core refuses when Settings turned it off. */
 export function runAudit(hostId: string): void {
-  ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "running", step: "Starting…", at: Date.now() } };
+  ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "running", step: { text: t("Starting…") }, at: Date.now() } };
   if (attempt(() => core().call({ op: "audit.run", host: hostId })) === undefined) {
-    ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "error", step: ui.error ?? t("could not start"), at: Date.now() } };
+    ui.auditRuns = { ...ui.auditRuns, [hostId]: { state: "error", step: { text: ui.error ?? t("could not start") }, at: Date.now() } };
   }
   render();
 }

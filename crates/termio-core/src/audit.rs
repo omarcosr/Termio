@@ -15,6 +15,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as Atomic};
 use std::time::Duration;
 
+use crate::msg::{Msg, tr};
+
 /// The groups of checks the user turns on and off, in the order they run.
 pub const CATEGORIES: &[&str] = &["system", "packages", "ssh", "accounts", "files", "network", "services", "containers", "logs", "secrets"];
 
@@ -256,13 +258,13 @@ pub fn script(options: &Options) -> String {
 }
 
 /// What the UI shows while a section runs.
-pub fn step(section: &str) -> String {
+pub fn step(section: &str) -> Msg {
     let category = section.split('.').next().unwrap_or(section);
     match category {
-        "base" => "Reading the system…".into(),
-        "end" => "Analysing…".into(),
-        "timeout" => "Out of time".into(),
-        other => format!("Checking {other}…"),
+        "base" => tr!("audit.step.reading", "Reading the system…"),
+        "end" => tr!("audit.step.analysing", "Analysing…"),
+        "timeout" => tr!("audit.step.timeout", "Out of time"),
+        other => tr!("audit.step.checking", "Checking {category}…", category = other),
     }
 }
 
@@ -337,10 +339,10 @@ struct Finding {
     /// Where it comes from: "rule" (judged here), "osv", "osv-approx" or "vendor".
     source: &'static str,
     severity: Severity,
-    title: String,
-    detail: String,
+    title: Msg,
+    detail: Msg,
     evidence: String,
-    fix: String,
+    fix: Msg,
 }
 
 impl Finding {
@@ -349,8 +351,8 @@ impl Finding {
         self
     }
 
-    fn detail(&mut self, text: impl Into<String>) -> &mut Self {
-        self.detail = text.into();
+    fn detail(&mut self, text: Msg) -> &mut Self {
+        self.detail = text;
         self
     }
 
@@ -359,13 +361,20 @@ impl Finding {
         self
     }
 
-    fn fix(&mut self, text: impl Into<String>) -> &mut Self {
-        self.fix = text.into();
+    fn fix(&mut self, text: Msg) -> &mut Self {
+        self.fix = text;
         self
     }
 
     fn json(&self) -> Value {
-        json!({ "id": self.id, "category": self.category, "source": self.source, "severity": self.severity.name(), "title": self.title, "detail": self.detail, "evidence": self.evidence, "fix": self.fix })
+        // title, detail and fix stay as English text for older apps; `messages` is what the UI translates.
+        let mut messages = serde_json::Map::new();
+        for (name, msg) in [("title", &self.title), ("detail", &self.detail), ("fix", &self.fix)] {
+            if !msg.is_empty() {
+                messages.insert(name.into(), msg.json());
+            }
+        }
+        json!({ "id": self.id, "category": self.category, "source": self.source, "severity": self.severity.name(), "title": self.title.text(), "detail": self.detail.text(), "evidence": self.evidence, "fix": self.fix.text(), "messages": messages })
     }
 }
 
@@ -373,8 +382,8 @@ impl Finding {
 struct Findings(Vec<Finding>);
 
 impl Findings {
-    fn add(&mut self, category: &'static str, severity: Severity, id: &str, title: impl Into<String>) -> &mut Finding {
-        self.0.push(Finding { id: format!("{category}.{id}"), category, source: "rule", severity, title: title.into(), detail: String::new(), evidence: String::new(), fix: String::new() });
+    fn add(&mut self, category: &'static str, severity: Severity, id: &str, title: Msg) -> &mut Finding {
+        self.0.push(Finding { id: format!("{category}.{id}"), category, source: "rule", severity, title, detail: Msg::default(), evidence: String::new(), fix: Msg::default() });
         self.0.last_mut().expect("just pushed")
     }
 }
@@ -489,44 +498,52 @@ fn manager(d: &Data) -> &'static str {
     }
 }
 
-fn upgrade_command(manager: &str, security: bool) -> &'static str {
+fn upgrade_command(manager: &str, security: bool) -> Msg {
     match (manager, security) {
-        ("dpkg", true) => "sudo apt-get update && sudo apt-get upgrade (or sudo unattended-upgrade for security updates only)",
-        ("dpkg", false) => "sudo apt-get update && sudo apt-get upgrade",
-        ("rpm", true) => "sudo dnf upgrade --security",
-        ("rpm", false) => "sudo dnf upgrade",
-        ("apk", _) => "apk update && apk upgrade",
-        _ => "Install the pending updates with the system's package manager.",
+        ("dpkg", true) => Msg::raw("sudo apt-get update && sudo apt-get upgrade (or sudo unattended-upgrade for security updates only)"),
+        ("dpkg", false) => Msg::raw("sudo apt-get update && sudo apt-get upgrade"),
+        ("rpm", true) => Msg::raw("sudo dnf upgrade --security"),
+        ("rpm", false) => Msg::raw("sudo dnf upgrade"),
+        ("apk", _) => Msg::raw("apk update && apk upgrade"),
+        _ => tr!("audit.packages.upgrade", "Install the pending updates with the system's package manager."),
     }
 }
 
 // --- The analysis ----------------------------------------------------------------------------------
 
 /// Judges the script's output: the report the UI shows and the vault keeps.
-pub fn analyze(output: &str, options: &Options, address: Option<&str>, progress: &dyn Fn(&str)) -> Value {
+pub fn analyze(output: &str, options: &Options, address: Option<&str>, progress: &dyn Fn(&Msg)) -> Value {
     let d = Data::parse(output);
     let meta = pairs(d.get("base.meta"));
     let os = pairs(d.get("base.os"));
     let root = meta.get("root").is_some_and(|value| value == "1");
     let mut f = Findings::default();
     if d.has("timeout") {
-        f.add("base", Medium, "timeout", "The audit ran out of time")
-            .detail("The server took too long to answer every check: the sections after the last one received are missing.")
-            .fix("Run it again, or turn off the slow checks (Files, Secrets) in Settings > Security.");
+        f.add("base", Medium, "timeout", tr!("audit.base.timeout.title", "The audit ran out of time"))
+            .detail(tr!("audit.base.timeout.detail", "The server took too long to answer every check: the sections after the last one received are missing."))
+            .fix(tr!("audit.base.timeout.fix", "Run it again, or turn off the slow checks (Files, Secrets) in Settings > Security."));
     } else if !d.has("end") {
-        f.add("base", Medium, "incomplete", "The audit ended early").detail("The connection closed before every check ran: the report is partial.").evidence(output.lines().rev().take(5).collect::<Vec<_>>().join("\n"));
+        f.add("base", Medium, "incomplete", tr!("audit.base.incomplete.title", "The audit ended early"))
+            .detail(tr!("audit.base.incomplete.detail", "The connection closed before every check ran: the report is partial."))
+            .evidence(output.lines().rev().take(5).collect::<Vec<_>>().join("\n"));
     }
     if !d.has("base.meta") {
-        f.add("base", High, "no-shell", "The server did not run the audit script").detail("No POSIX shell answered: the account may be limited to SFTP or a restricted shell.").evidence(clip(output));
+        f.add("base", High, "no-shell", tr!("audit.base.no-shell.title", "The server did not run the audit script"))
+            .detail(tr!("audit.base.no-shell.detail", "No POSIX shell answered: the account may be limited to SFTP or a restricted shell."))
+            .evidence(clip(output));
     } else if !root {
-        f.add("base", Info, "partial", "Checked without root")
-            .detail("Password hashes, sudoers, firewall rules, other users' files and the programs behind open ports need root: those checks were skipped or are partial.")
+        f.add("base", Info, "partial", tr!("audit.base.partial.title", "Checked without root"))
+            .detail(tr!("audit.base.partial.detail", "Password hashes, sudoers, firewall rules, other users' files and the programs behind open ports need root: those checks were skipped or are partial."))
             .evidence(format!("user {}", meta.get("user").map_or("?", String::as_str)))
-            .fix(if options.sudo { "This user cannot run sudo without a password: allow it (NOPASSWD) for a complete audit, or connect as root." } else { "Turn on \"Use sudo\" in Settings > Security (needs passwordless sudo) or connect as root." });
+            .fix(if options.sudo {
+                tr!("audit.base.partial.sudo.fix", "This user cannot run sudo without a password: allow it (NOPASSWD) for a complete audit, or connect as root.")
+            } else {
+                tr!("audit.base.partial.no-sudo.fix", "Turn on \"Use sudo\" in Settings > Security (needs passwordless sudo) or connect as root.")
+            });
     }
     let reach = match address {
         Some(address) if options.probe && options.has("network") => {
-            progress("Trying the open ports from this device…");
+            progress(&tr!("audit.step.probing", "Trying the open ports from this device…"));
             probe(address, &listeners(&d))
         }
         _ => HashMap::new(),
@@ -598,24 +615,27 @@ pub fn analyze(output: &str, options: &Options, address: Option<&str>, progress:
     })
 }
 
-const SYSCTL: &[(&str, &[&str], Severity, &str)] = &[
-    ("kernel.randomize_va_space", &["2"], High, "Address space layout randomisation is not fully on"),
-    ("kernel.kptr_restrict", &["1", "2"], Low, "Kernel pointers are visible to every user"),
-    ("kernel.dmesg_restrict", &["1"], Low, "Every user can read the kernel log"),
-    ("kernel.yama.ptrace_scope", &["1", "2", "3"], Low, "Any process can trace the other processes of its user"),
-    ("kernel.unprivileged_bpf_disabled", &["1", "2"], Medium, "Unprivileged users can load BPF programs"),
-    ("fs.protected_symlinks", &["1"], Medium, "Symlink protection in shared directories is off"),
-    ("fs.protected_hardlinks", &["1"], Medium, "Hardlink protection is off"),
-    ("fs.protected_fifos", &["1", "2"], Low, "FIFO protection in shared directories is off"),
-    ("fs.protected_regular", &["1", "2"], Low, "File protection in shared directories is off"),
-    ("fs.suid_dumpable", &["0"], Low, "SUID programs may write core dumps"),
-    ("net.ipv4.conf.all.accept_redirects", &["0"], Low, "ICMP redirects are accepted"),
-    ("net.ipv6.conf.all.accept_redirects", &["0"], Low, "IPv6 ICMP redirects are accepted"),
-    ("net.ipv4.conf.all.send_redirects", &["0"], Low, "ICMP redirects are sent"),
-    ("net.ipv4.conf.all.accept_source_route", &["0"], Medium, "Source-routed packets are accepted"),
-    ("net.ipv4.tcp_syncookies", &["1"], Low, "SYN cookies (SYN flood protection) are off"),
-    ("net.ipv4.conf.all.rp_filter", &["1", "2"], Low, "Reverse path filtering is off"),
-];
+/// Kernel settings worth hardening: the key, the values that count as hardened, and the finding.
+fn sysctl_rules() -> Vec<(&'static str, &'static [&'static str], Severity, Msg)> {
+    vec![
+        ("kernel.randomize_va_space", &["2"], High, tr!("audit.system.sysctl.randomize-va-space", "Address space layout randomisation is not fully on")),
+        ("kernel.kptr_restrict", &["1", "2"], Low, tr!("audit.system.sysctl.kptr-restrict", "Kernel pointers are visible to every user")),
+        ("kernel.dmesg_restrict", &["1"], Low, tr!("audit.system.sysctl.dmesg-restrict", "Every user can read the kernel log")),
+        ("kernel.yama.ptrace_scope", &["1", "2", "3"], Low, tr!("audit.system.sysctl.ptrace-scope", "Any process can trace the other processes of its user")),
+        ("kernel.unprivileged_bpf_disabled", &["1", "2"], Medium, tr!("audit.system.sysctl.unprivileged-bpf", "Unprivileged users can load BPF programs")),
+        ("fs.protected_symlinks", &["1"], Medium, tr!("audit.system.sysctl.protected-symlinks", "Symlink protection in shared directories is off")),
+        ("fs.protected_hardlinks", &["1"], Medium, tr!("audit.system.sysctl.protected-hardlinks", "Hardlink protection is off")),
+        ("fs.protected_fifos", &["1", "2"], Low, tr!("audit.system.sysctl.protected-fifos", "FIFO protection in shared directories is off")),
+        ("fs.protected_regular", &["1", "2"], Low, tr!("audit.system.sysctl.protected-regular", "File protection in shared directories is off")),
+        ("fs.suid_dumpable", &["0"], Low, tr!("audit.system.sysctl.suid-dumpable", "SUID programs may write core dumps")),
+        ("net.ipv4.conf.all.accept_redirects", &["0"], Low, tr!("audit.system.sysctl.ipv4-accept-redirects", "ICMP redirects are accepted")),
+        ("net.ipv6.conf.all.accept_redirects", &["0"], Low, tr!("audit.system.sysctl.ipv6-accept-redirects", "IPv6 ICMP redirects are accepted")),
+        ("net.ipv4.conf.all.send_redirects", &["0"], Low, tr!("audit.system.sysctl.send-redirects", "ICMP redirects are sent")),
+        ("net.ipv4.conf.all.accept_source_route", &["0"], Medium, tr!("audit.system.sysctl.accept-source-route", "Source-routed packets are accepted")),
+        ("net.ipv4.tcp_syncookies", &["1"], Low, tr!("audit.system.sysctl.syncookies", "SYN cookies (SYN flood protection) are off")),
+        ("net.ipv4.conf.all.rp_filter", &["1", "2"], Low, tr!("audit.system.sysctl.rp-filter", "Reverse path filtering is off")),
+    ]
+}
 
 fn system(d: &Data, os: &HashMap<String, String>, f: &mut Findings) {
     const C: &str = "system";
@@ -633,16 +653,16 @@ fn system(d: &Data, os: &HashMap<String, String>, f: &mut Findings) {
         _ => false,
     };
     if ended {
-        f.add(C, High, "eol", format!("{pretty} no longer gets security updates"))
-            .detail("This release reached its end of life: new vulnerabilities in the kernel and packages stay unfixed (unless it has paid extended support, such as Ubuntu Pro or Debian ELTS).")
+        f.add(C, High, "eol", tr!("audit.system.eol.title", "{pretty} no longer gets security updates", pretty = pretty))
+            .detail(tr!("audit.system.eol.detail", "This release reached its end of life: new vulnerabilities in the kernel and packages stay unfixed (unless it has paid extended support, such as Ubuntu Pro or Debian ELTS)."))
             .evidence(format!("ID={id}\nVERSION_ID={version}"))
-            .fix("Upgrade to a supported release of the distribution.");
+            .fix(tr!("audit.system.eol.fix", "Upgrade to a supported release of the distribution."));
     }
     if d.lines("system.reboot").next().is_some() {
-        f.add(C, Medium, "reboot", "A reboot is pending")
-            .detail("Installed updates (often the kernel, libc or OpenSSL) only take effect after a restart.")
+        f.add(C, Medium, "reboot", tr!("audit.system.reboot.title", "A reboot is pending"))
+            .detail(tr!("audit.system.reboot.detail", "Installed updates (often the kernel, libc or OpenSSL) only take effect after a restart."))
             .evidence(d.get("system.reboot"))
-            .fix("Plan a restart: sudo reboot");
+            .fix(tr!("audit.system.reboot.fix", "Plan a restart: sudo reboot"));
     }
     let running = d.lines("base.uname").next().unwrap_or("");
     let flavour = |kernel: &str| kernel.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '-').to_owned();
@@ -651,48 +671,56 @@ fn system(d: &Data, os: &HashMap<String, String>, f: &mut Findings) {
         && !running.is_empty()
         && version_cmp(newest, running) == Ordering::Greater
     {
-        f.add(C, Medium, "kernel", format!("The running kernel {running} is older than the installed {newest}"))
-            .detail("A newer kernel, usually with security fixes, is installed but the server has not restarted into it.")
+        f.add(C, Medium, "kernel", tr!("audit.system.kernel.title", "The running kernel {running} is older than the installed {newest}", running = running, newest = newest))
+            .detail(tr!("audit.system.kernel.detail", "A newer kernel, usually with security fixes, is installed but the server has not restarted into it."))
             .evidence(d.get("system.kernels"))
-            .fix("Restart the server to boot the new kernel (or use a live patch service).");
+            .fix(tr!("audit.system.kernel.fix", "Restart the server to boot the new kernel (or use a live patch service)."));
     }
     if let Some(seconds) = d.lines("system.uptime").next().and_then(|text| text.parse::<f64>().ok()) {
         let days = (seconds / 86400.0) as u64;
         if days > 180 {
-            f.add(C, Low, "uptime", format!("Up for {days} days")).detail("A server that has not restarted in months most likely runs a kernel without recent security fixes.").fix("Restart it after installing updates, or use a live patch service.");
+            f.add(C, Low, "uptime", tr!("audit.system.uptime.title", "Up for {days} days", days = days))
+                .detail(tr!("audit.system.uptime.detail", "A server that has not restarted in months most likely runs a kernel without recent security fixes."))
+                .fix(tr!("audit.system.uptime.fix", "Restart it after installing updates, or use a live patch service."));
         }
     }
     let vulnerable: Vec<&str> = d.lines("system.cpu").filter(|line| line.split_once(": ").is_some_and(|(_, state)| state.starts_with("Vulnerable"))).collect();
     if !vulnerable.is_empty() {
-        f.add(C, Medium, "cpu", format!("The CPU is open to {} side-channel attack(s)", vulnerable.len()))
-            .detail("The kernel reports CPU flaws it does not mitigate (microcode or kernel too old, or mitigations turned off).")
+        f.add(C, Medium, "cpu", tr!("audit.system.cpu.title", "The CPU is open to {count} side-channel attack(s)", count = vulnerable.len()))
+            .detail(tr!("audit.system.cpu.detail", "The kernel reports CPU flaws it does not mitigate (microcode or kernel too old, or mitigations turned off)."))
             .evidence(vulnerable.join("\n"))
-            .fix("Update the kernel and the CPU microcode (intel-microcode / amd64-microcode), and do not boot with mitigations=off.");
+            .fix(tr!("audit.system.cpu.fix", "Update the kernel and the CPU microcode (intel-microcode / amd64-microcode), and do not boot with mitigations=off."));
     }
     let sysctl = pairs(d.get("system.sysctl"));
-    for (key, good, severity, title) in SYSCTL {
-        if let Some(value) = sysctl.get(*key)
+    for (key, good, severity, title) in sysctl_rules() {
+        if let Some(value) = sysctl.get(key)
             && !good.contains(&value.as_str())
         {
-            f.add(C, *severity, key, *title).evidence(format!("{key} = {value}")).fix(format!("echo '{key} = {}' | sudo tee /etc/sysctl.d/90-hardening.conf -a && sudo sysctl --system", good[good.len() - 1]));
+            f.add(C, severity, key, title)
+                .evidence(format!("{key} = {value}"))
+                .fix(Msg::raw(format!("echo '{key} = {}' | sudo tee /etc/sysctl.d/90-hardening.conf -a && sudo sysctl --system", good[good.len() - 1])));
         }
     }
     if sysctl.get("net.ipv4.ip_forward").is_some_and(|value| value == "1") {
-        f.add(C, Info, "forwarding", "The server routes packets between networks").detail("IP forwarding is on: expected for a router, VPN or container host, otherwise not needed.").evidence("net.ipv4.ip_forward = 1");
+        f.add(C, Info, "forwarding", tr!("audit.system.forwarding.title", "The server routes packets between networks"))
+            .detail(tr!("audit.system.forwarding.detail", "IP forwarding is on: expected for a router, VPN or container host, otherwise not needed."))
+            .evidence("net.ipv4.ip_forward = 1");
     }
     if d.has("system.mac") {
         let mac = pairs(d.get("system.mac"));
         let selinux = mac.get("selinux").is_some_and(|value| value.eq_ignore_ascii_case("enforcing"));
         let apparmor = mac.get("apparmor").is_some_and(|value| value == "Y");
         if !selinux && !apparmor {
-            f.add(C, Low, "mac", "No mandatory access control is enforcing")
-                .detail("Neither SELinux nor AppArmor confines services: a compromised daemon reaches everything its user can.")
+            f.add(C, Low, "mac", tr!("audit.system.mac.title", "No mandatory access control is enforcing"))
+                .detail(tr!("audit.system.mac.detail", "Neither SELinux nor AppArmor confines services: a compromised daemon reaches everything its user can."))
                 .evidence(d.get("system.mac"))
-                .fix("Enable AppArmor (Debian/Ubuntu) or set SELinux to enforcing (RHEL family).");
+                .fix(tr!("audit.system.mac.fix", "Enable AppArmor (Debian/Ubuntu) or set SELinux to enforcing (RHEL family)."));
         }
     }
     if pairs(d.get("system.time")).get("ntp").is_some_and(|value| value == "no") {
-        f.add(C, Low, "ntp", "The clock is not synchronised").detail("A drifting clock breaks TLS and token checks and makes logs useless for an investigation.").fix("sudo timedatectl set-ntp true");
+        f.add(C, Low, "ntp", tr!("audit.system.ntp.title", "The clock is not synchronised"))
+            .detail(tr!("audit.system.ntp.detail", "A drifting clock breaks TLS and token checks and makes logs useless for an investigation."))
+            .fix(Msg::raw("sudo timedatectl set-ntp true"));
     }
     let weak_mounts: Vec<String> = d
         .lines("system.mounts")
@@ -703,10 +731,10 @@ fn system(d: &Data, os: &HashMap<String, String>, f: &mut Findings) {
         })
         .collect();
     if !weak_mounts.is_empty() {
-        f.add(C, Low, "mounts", "Shared temporary directories allow running programs")
-            .detail("Attackers drop and run their tools in /tmp or /dev/shm; mounting them noexec,nosuid,nodev stops most of that.")
+        f.add(C, Low, "mounts", tr!("audit.system.mounts.title", "Shared temporary directories allow running programs"))
+            .detail(tr!("audit.system.mounts.detail", "Attackers drop and run their tools in /tmp or /dev/shm; mounting them noexec,nosuid,nodev stops most of that."))
             .evidence(weak_mounts.join("\n"))
-            .fix("Add noexec,nosuid,nodev to these mounts in /etc/fstab and remount.");
+            .fix(tr!("audit.system.mounts.fix", "Add noexec,nosuid,nodev to these mounts in /etc/fstab and remount."));
     }
 }
 
@@ -716,13 +744,15 @@ fn packages(d: &Data, meta: &HashMap<String, String>, f: &mut Findings) {
     let pending: Vec<&str> = d.lines("packages.pending").collect();
     let security: Vec<&str> = if manager == "dpkg" { pending.iter().filter(|line| line.to_ascii_lowercase().contains("security")).copied().collect() } else { d.lines("packages.security").collect() };
     if !security.is_empty() {
-        f.add(C, High, "security-updates", format!("{} security updates are not installed", security.len()))
-            .detail("The distribution has already published fixes for vulnerabilities in these packages.")
+        f.add(C, High, "security-updates", tr!("audit.packages.security-updates.title", "{count} security updates are not installed", count = security.len()))
+            .detail(tr!("audit.packages.security-updates.detail", "The distribution has already published fixes for vulnerabilities in these packages."))
             .evidence(security.join("\n"))
             .fix(upgrade_command(manager, true));
     }
     if !pending.is_empty() {
-        f.add(C, if security.is_empty() { Medium } else { Low }, "updates", format!("{} packages have updates waiting", pending.len())).evidence(pending.join("\n")).fix(upgrade_command(manager, false));
+        f.add(C, if security.is_empty() { Medium } else { Low }, "updates", tr!("audit.packages.updates.title", "{count} packages have updates waiting", count = pending.len()))
+            .evidence(pending.join("\n"))
+            .fix(upgrade_command(manager, false));
     }
     let now: u64 = meta.get("now").and_then(|now| now.parse().ok()).unwrap_or(0);
     let refreshed = d.lines("packages.refreshed").filter_map(|line| line.split_whitespace().next()?.parse::<u64>().ok()).max();
@@ -730,9 +760,9 @@ fn packages(d: &Data, meta: &HashMap<String, String>, f: &mut Findings) {
         && now > refreshed
         && (now - refreshed) / 86400 > 7
     {
-        f.add(C, Low, "stale", format!("The package lists were last refreshed {} days ago", (now - refreshed) / 86400))
-            .detail("With old lists the server does not know about recent updates, and this audit cannot list them either.")
-            .fix(if manager == "dpkg" { "sudo apt-get update" } else { "sudo dnf makecache" });
+        f.add(C, Low, "stale", tr!("audit.packages.stale.title", "The package lists were last refreshed {days} days ago", days = (now - refreshed) / 86400))
+            .detail(tr!("audit.packages.stale.detail", "With old lists the server does not know about recent updates, and this audit cannot list them either."))
+            .fix(Msg::raw(if manager == "dpkg" { "sudo apt-get update" } else { "sudo dnf makecache" }));
     }
     let auto = d.get("packages.auto");
     let automatic = match manager {
@@ -741,16 +771,16 @@ fn packages(d: &Data, meta: &HashMap<String, String>, f: &mut Findings) {
         _ => None,
     };
     if automatic == Some(false) {
-        f.add(C, Low, "auto", "Security updates are not installed automatically")
-            .detail("Fixes wait until someone logs in and upgrades by hand.")
-            .fix(if manager == "dpkg" { "sudo apt-get install unattended-upgrades && sudo dpkg-reconfigure -plow unattended-upgrades" } else { "sudo dnf install dnf-automatic && sudo systemctl enable --now dnf-automatic-install.timer" });
+        f.add(C, Low, "auto", tr!("audit.packages.auto.title", "Security updates are not installed automatically"))
+            .detail(tr!("audit.packages.auto.detail", "Fixes wait until someone logs in and upgrades by hand."))
+            .fix(Msg::raw(if manager == "dpkg" { "sudo apt-get install unattended-upgrades && sudo dpkg-reconfigure -plow unattended-upgrades" } else { "sudo dnf install dnf-automatic && sudo systemctl enable --now dnf-automatic-install.timer" }));
     }
     let installed = d.lines("packages.dpkg").count() + d.lines("packages.rpm").count() + d.lines("packages.apk").count();
     if installed > 0 {
-        f.add(C, Info, "inventory", format!("{installed} packages installed ({manager})")).detail("Turn on the CVE lookup to match each version against known vulnerabilities.");
+        f.add(C, Info, "inventory", tr!("audit.packages.inventory.title", "{count} packages installed ({manager})", count = installed, manager = manager))
+            .detail(tr!("audit.packages.inventory.detail", "Turn on the CVE lookup to match each version against known vulnerabilities."));
     }
 }
-
 fn sshd_effective(text: &str) -> HashMap<String, String> {
     let mut values = HashMap::new();
     for line in text.lines() {
@@ -784,67 +814,79 @@ fn ssh(d: &Data, cve: bool, f: &mut Findings) {
     let exact = effective.lines().count() > 10;
     let config = if exact { sshd_effective(effective) } else { sshd_file(d.get("ssh.config")) };
     if config.is_empty() && !exact {
-        f.add(C, Info, "unread", "The SSH server configuration could not be read").detail("No sshd_config was readable: the rules below were skipped.");
+        f.add(C, Info, "unread", tr!("audit.ssh.unread.title", "The SSH server configuration could not be read"))
+            .detail(tr!("audit.ssh.unread.detail", "No sshd_config was readable: the rules below were skipped."));
     } else {
         let source = if exact { "sshd -T" } else { "sshd_config, where unset values fall back to OpenSSH defaults; turn on sudo for the effective ones" };
         let value = |key: &str, default: &str| config.get(key).cloned().unwrap_or_else(|| default.to_owned()).to_ascii_lowercase();
         let evidence = |key: &str, value: &str| format!("{key} {value}   # {source}");
-        let rules: [(&str, &str, &str, Severity, &str, &str); 7] = [
-            ("permitrootlogin", "prohibit-password", "yes", High, "root can log in with a password", "PermitRootLogin prohibit-password (or no)"),
-            ("passwordauthentication", "yes", "yes", Medium, "Password logins are allowed", "PasswordAuthentication no, after every user has a key"),
-            ("permitemptypasswords", "no", "yes", Critical, "Accounts with an empty password can log in", "PermitEmptyPasswords no"),
-            ("x11forwarding", "no", "yes", Low, "X11 forwarding is on", "X11Forwarding no"),
-            ("permituserenvironment", "no", "yes", Medium, "Users can set environment variables for sshd", "PermitUserEnvironment no"),
-            ("gatewayports", "no", "yes", Low, "Forwarded ports listen on every interface", "GatewayPorts no"),
-            ("loglevel", "info", "quiet", Low, "sshd logs nothing", "LogLevel VERBOSE"),
+        let rules = [
+            ("permitrootlogin", "prohibit-password", "yes", High, tr!("audit.ssh.root-password.title", "root can log in with a password"), tr!("audit.ssh.root-password.directive", "PermitRootLogin prohibit-password (or no)")),
+            ("passwordauthentication", "yes", "yes", Medium, tr!("audit.ssh.password-auth.title", "Password logins are allowed"), tr!("audit.ssh.password-auth.directive", "PasswordAuthentication no, after every user has a key")),
+            ("permitemptypasswords", "no", "yes", Critical, tr!("audit.ssh.empty-password.title", "Accounts with an empty password can log in"), Msg::raw("PermitEmptyPasswords no")),
+            ("x11forwarding", "no", "yes", Low, tr!("audit.ssh.x11-forwarding.title", "X11 forwarding is on"), Msg::raw("X11Forwarding no")),
+            ("permituserenvironment", "no", "yes", Medium, tr!("audit.ssh.user-environment.title", "Users can set environment variables for sshd"), Msg::raw("PermitUserEnvironment no")),
+            ("gatewayports", "no", "yes", Low, tr!("audit.ssh.gatewayports.title", "Forwarded ports listen on every interface"), Msg::raw("GatewayPorts no")),
+            ("loglevel", "info", "quiet", Low, tr!("audit.ssh.loglevel.title", "sshd logs nothing"), Msg::raw("LogLevel VERBOSE")),
         ];
         for (key, default, bad, severity, title, fix) in rules {
             let current = value(key, default);
             if current == bad {
-                f.add(C, severity, key, title).evidence(evidence(key, &current)).fix(format!("Set {fix} in /etc/ssh/sshd_config, then sudo systemctl reload ssh"));
+                f.add(C, severity, key, title)
+                    .evidence(evidence(key, &current))
+                    .fix(tr!("audit.ssh.directive.fix", "Set {directive} in /etc/ssh/sshd_config, then sudo systemctl reload ssh", directive = fix));
             }
         }
         if let Ok(tries) = value("maxauthtries", "6").parse::<u32>()
             && tries > 4
         {
-            f.add(C, Low, "maxauthtries", format!("{tries} password attempts per connection")).evidence(evidence("maxauthtries", &tries.to_string())).fix("Set MaxAuthTries 3 in /etc/ssh/sshd_config");
+            f.add(C, Low, "maxauthtries", tr!("audit.ssh.maxauthtries.title", "{count} password attempts per connection", count = tries))
+                .evidence(evidence("maxauthtries", &tries.to_string()))
+                .fix(tr!("audit.ssh.maxauthtries.fix", "Set MaxAuthTries 3 in /etc/ssh/sshd_config"));
         }
         if value("pubkeyauthentication", "yes") == "no" {
-            f.add(C, Medium, "pubkey", "Key logins are turned off").detail("Only passwords remain, which can be guessed.").fix("Set PubkeyAuthentication yes");
+            f.add(C, Medium, "pubkey", tr!("audit.ssh.pubkey.title", "Key logins are turned off"))
+                .detail(tr!("audit.ssh.pubkey.detail", "Only passwords remain, which can be guessed."))
+                .fix(tr!("audit.ssh.pubkey.fix", "Set PubkeyAuthentication yes"));
         }
         let weak = |key: &str, bad: &[&str]| -> Vec<String> { config.get(key).map(|list| list.split(',').filter(|item| bad.iter().any(|bad| item.contains(bad))).map(str::to_owned).collect()).unwrap_or_default() };
-        let checks: [(&str, &[&str], Severity, &str, &str); 4] = [
-            ("ciphers", &["cbc", "3des", "arcfour", "blowfish"], Medium, "Weak ciphers are offered", "Ciphers"),
-            ("macs", &["hmac-md5", "hmac-sha1", "umac-64", "ripemd"], Low, "Weak MACs are offered", "MACs"),
-            ("kexalgorithms", &["group1-sha1", "group14-sha1", "exchange-sha1", "gss-gex-sha1", "gss-group1"], Medium, "Weak key exchanges are offered", "KexAlgorithms"),
-            ("hostkeyalgorithms", &["ssh-dss"], Medium, "DSA host keys are offered", "HostKeyAlgorithms"),
+        let checks = [
+            ("ciphers", &["cbc", "3des", "arcfour", "blowfish"][..], Medium, tr!("audit.ssh.ciphers.title", "Weak ciphers are offered"), "Ciphers"),
+            ("macs", &["hmac-md5", "hmac-sha1", "umac-64", "ripemd"][..], Low, tr!("audit.ssh.macs.title", "Weak MACs are offered"), "MACs"),
+            ("kexalgorithms", &["group1-sha1", "group14-sha1", "exchange-sha1", "gss-gex-sha1", "gss-group1"][..], Medium, tr!("audit.ssh.kex.title", "Weak key exchanges are offered"), "KexAlgorithms"),
+            ("hostkeyalgorithms", &["ssh-dss"][..], Medium, tr!("audit.ssh.hostkeyalgorithms.title", "DSA host keys are offered"), "HostKeyAlgorithms"),
         ];
         for (key, bad, severity, title, directive) in checks {
             let found = weak(key, bad);
             if !found.is_empty() {
-                f.add(C, severity, key, title).evidence(found.join("\n")).fix(format!("Remove them from {directive} in /etc/ssh/sshd_config (prefix the list with - to drop items)."));
+                f.add(C, severity, key, title).evidence(found.join("\n"))
+                    .fix(tr!("audit.ssh.weak-algorithm.fix", "Remove them from {directive} in /etc/ssh/sshd_config (prefix the list with - to drop items).", directive = directive));
             }
         }
     }
     let version_line = d.lines("ssh.version").next().unwrap_or("");
     if let Some(version) = version_line.split("OpenSSH_").nth(1).and_then(|rest| rest.split([' ', ',']).next()) {
         if below(version, "7.4") {
-            f.add(C, High, "old", format!("OpenSSH {version} is very old")).detail("Many vulnerabilities were fixed since; this version is long out of support.").evidence(version_line).fix("Upgrade the distribution or OpenSSH.");
+            f.add(C, High, "old", tr!("audit.ssh.old.title", "OpenSSH {version} is very old", version = version))
+                .detail(tr!("audit.ssh.old.detail", "Many vulnerabilities were fixed since; this version is long out of support."))
+                .evidence(version_line).fix(tr!("audit.ssh.old.fix", "Upgrade the distribution or OpenSSH."));
         } else if !cve && !below(version, "8.5") && below(version, "9.8") {
-            f.add(C, Medium, "regresshion", format!("OpenSSH {version} may be open to regreSSHion (CVE-2024-6387)"))
-                .detail("Versions 8.5p1 to 9.7p1 allow remote code execution as root unless the distribution backported the fix. Turn on the CVE lookup for a definite answer.")
+            f.add(C, Medium, "regresshion", tr!("audit.ssh.regresshion.title", "OpenSSH {version} may be open to regreSSHion (CVE-2024-6387)", version = version))
+                .detail(tr!("audit.ssh.regresshion.detail", "Versions 8.5p1 to 9.7p1 allow remote code execution as root unless the distribution backported the fix. Turn on the CVE lookup for a definite answer."))
                 .evidence(version_line)
-                .fix("Install the latest openssh-server update from the distribution.");
+                .fix(tr!("audit.ssh.regresshion.fix", "Install the latest openssh-server update from the distribution."));
         } else if !cve && below(version, "9.6") {
-            f.add(C, Low, "terrapin", format!("OpenSSH {version} may be open to Terrapin (CVE-2023-48795)")).detail("Unless patched by the distribution; turn on the CVE lookup for a definite answer.").evidence(version_line).fix("Update openssh-server.");
+            f.add(C, Low, "terrapin", tr!("audit.ssh.terrapin.title", "OpenSSH {version} may be open to Terrapin (CVE-2023-48795)", version = version))
+                .detail(tr!("audit.ssh.terrapin.detail", "Unless patched by the distribution; turn on the CVE lookup for a definite answer."))
+                .evidence(version_line).fix(tr!("audit.ssh.terrapin.fix", "Update openssh-server."));
         }
     }
     let exposed: Vec<String> = ls_entries(d.get("ssh.hostkeys")).into_iter().filter(|(mode, _, _)| others_may(mode, 'r') || group_may(mode, 'r') && !mode.is_empty()).map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect();
     if !exposed.is_empty() {
-        f.add(C, High, "hostkeys", "SSH host private keys are readable by other users")
-            .detail("Anyone who reads them can impersonate this server.")
+        f.add(C, High, "hostkeys", tr!("audit.ssh.hostkeys.title", "SSH host private keys are readable by other users"))
+            .detail(tr!("audit.ssh.hostkeys.detail", "Anyone who reads them can impersonate this server."))
             .evidence(exposed.join("\n"))
-            .fix("sudo chmod 600 /etc/ssh/ssh_host_*_key");
+            .fix(Msg::raw("sudo chmod 600 /etc/ssh/ssh_host_*_key"));
     }
 }
 
@@ -853,49 +895,62 @@ fn accounts(d: &Data, root: bool, f: &mut Findings) {
     let users: Vec<Vec<&str>> = d.lines("accounts.passwd").map(|line| line.split(':').collect::<Vec<_>>()).filter(|fields| fields.len() >= 7).collect();
     let roots: Vec<&str> = users.iter().filter(|fields| fields[2] == "0" && fields[0] != "root").map(|fields| fields[0]).collect();
     if !roots.is_empty() {
-        f.add(C, Critical, "uid0", format!("{} has user id 0 (root)", roots.join(", "))).detail("Any account with id 0 is root. A second one is a classic backdoor.").evidence(roots.join("\n")).fix("Remove the account or give it its own id.");
+        f.add(C, Critical, "uid0", tr!("audit.accounts.uid0.title", "{users} has user id 0 (root)", users = roots.join(", ")))
+            .detail(tr!("audit.accounts.uid0.detail", "Any account with id 0 is root. A second one is a classic backdoor."))
+            .evidence(roots.join("\n")).fix(tr!("audit.accounts.uid0.fix", "Remove the account or give it its own id."));
     }
     let shell = |fields: &Vec<&str>| !["nologin", "false", "sync", "halt", "shutdown"].iter().any(|end| fields[6].ends_with(end)) && !fields[6].is_empty();
     let login: Vec<String> = users.iter().filter(|fields| shell(fields)).map(|fields| format!("{} (uid {}, {})", fields[0], fields[2], fields[6])).collect();
     if !login.is_empty() {
-        f.add(C, Info, "login", format!("{} accounts have a login shell", login.len())).evidence(login.join("\n"));
+        f.add(C, Info, "login", tr!("audit.accounts.login.title", "{count} accounts have a login shell", count = login.len())).evidence(login.join("\n"));
     }
     let services: Vec<&str> = users.iter().filter(|fields| shell(fields) && fields[0] != "root" && fields[2].parse::<u32>().is_ok_and(|id| id > 0 && id < 1000)).map(|fields| fields[0]).collect();
     if !services.is_empty() {
-        f.add(C, Low, "service-shells", "System accounts have a login shell").detail("Service accounts should not be able to log in.").evidence(services.join("\n")).fix("sudo usermod -s /usr/sbin/nologin <account>");
+        f.add(C, Low, "service-shells", tr!("audit.accounts.service-shells.title", "System accounts have a login shell"))
+            .detail(tr!("audit.accounts.service-shells.detail", "Service accounts should not be able to log in."))
+            .evidence(services.join("\n")).fix(Msg::raw("sudo usermod -s /usr/sbin/nologin <account>"));
     }
     for (mode, _, path) in ls_entries(d.get("accounts.perms")) {
         let issue = match path.as_str() {
-            "/etc/shadow" | "/etc/gshadow" if others_may(&mode, 'r') => Some((Critical, "is readable by every user", "chmod 640")),
-            "/etc/passwd" | "/etc/group" | "/etc/shadow" | "/etc/gshadow" | "/etc/sudoers" if others_may(&mode, 'w') => Some((Critical, "is writable by every user", "chmod o-w")),
-            "/etc/sudoers" if others_may(&mode, 'r') => Some((Medium, "is readable by every user", "chmod 440")),
-            "/root" if others_may(&mode, 'r') => Some((Medium, "is readable by every user", "chmod 700")),
-            "/etc/sudoers.d" if others_may(&mode, 'w') => Some((Critical, "is writable by every user", "chmod 750")),
+            "/etc/shadow" | "/etc/gshadow" if others_may(&mode, 'r') => Some((Critical, tr!("audit.accounts.readable.title", "is readable by every user"), "chmod 640")),
+            "/etc/passwd" | "/etc/group" | "/etc/shadow" | "/etc/gshadow" | "/etc/sudoers" if others_may(&mode, 'w') => Some((Critical, tr!("audit.accounts.writable.title", "is writable by every user"), "chmod o-w")),
+            "/etc/sudoers" if others_may(&mode, 'r') => Some((Medium, tr!("audit.accounts.readable.title", "is readable by every user"), "chmod 440")),
+            "/root" if others_may(&mode, 'r') => Some((Medium, tr!("audit.accounts.readable.title", "is readable by every user"), "chmod 700")),
+            "/etc/sudoers.d" if others_may(&mode, 'w') => Some((Critical, tr!("audit.accounts.writable.title", "is writable by every user"), "chmod 750")),
             _ => None,
         };
         if let Some((severity, what, fix)) = issue {
-            f.add(C, severity, &format!("perm{}", path.replace('/', "-")), format!("{path} {what}")).evidence(format!("{mode} {path}")).fix(format!("sudo {fix} {path}"));
+            f.add(C, severity, &format!("perm{}", path.replace('/', "-")), tr!("audit.accounts.perm.title", "{path} {what}", path = path.clone(), what = what))
+                .evidence(format!("{mode} {path}"))
+                .fix(Msg::raw(format!("sudo {fix} {path}")));
         }
     }
     if root {
         let shadow: Vec<Vec<&str>> = d.lines("accounts.shadow").map(|line| line.split(':').collect::<Vec<_>>()).filter(|fields| fields.len() >= 2).collect();
         let empty: Vec<&str> = shadow.iter().filter(|fields| fields[1] == "empty").map(|fields| fields[0]).collect();
         if !empty.is_empty() {
-            f.add(C, Critical, "empty-password", "Accounts without a password").detail("Anyone can log in as these accounts wherever passwords are accepted (console, su, maybe SSH).").evidence(empty.join("\n")).fix("sudo passwd -l <account>, or set a password.");
+            f.add(C, Critical, "empty-password", tr!("audit.accounts.empty-password.title", "Accounts without a password"))
+                .detail(tr!("audit.accounts.empty-password.detail", "Anyone can log in as these accounts wherever passwords are accepted (console, su, maybe SSH)."))
+                .evidence(empty.join("\n")).fix(tr!("audit.accounts.empty-password.fix", "sudo passwd -l <account>, or set a password."));
         }
         let weak: Vec<String> = shadow.iter().filter(|fields| fields[1] == "md5" || fields[1] == "des").map(|fields| format!("{} ({})", fields[0], fields[1])).collect();
         if !weak.is_empty() {
-            f.add(C, Medium, "weak-hash", "Passwords stored with a weak hash").detail("MD5 and DES hashes crack in minutes if /etc/shadow leaks.").evidence(weak.join("\n")).fix("Set ENCRYPT_METHOD SHA512 (or YESCRYPT) in /etc/login.defs and change these passwords.");
+            f.add(C, Medium, "weak-hash", tr!("audit.accounts.weak-hash.title", "Passwords stored with a weak hash"))
+                .detail(tr!("audit.accounts.weak-hash.detail", "MD5 and DES hashes crack in minutes if /etc/shadow leaks."))
+                .evidence(weak.join("\n")).fix(tr!("audit.accounts.weak-hash.fix", "Set ENCRYPT_METHOD SHA512 (or YESCRYPT) in /etc/login.defs and change these passwords."));
         }
     }
     let sudoers: Vec<&str> = d.lines("accounts.sudoers").collect();
     let all_nopasswd: Vec<&str> = sudoers.iter().filter(|line| line.contains("NOPASSWD") && line.trim_end().ends_with("ALL")).copied().collect();
     if !all_nopasswd.is_empty() {
-        f.add(C, Medium, "nopasswd", "sudo grants root without a password").detail("Whoever gets into these accounts becomes root at once.").evidence(all_nopasswd.join("\n")).fix("Remove NOPASSWD or limit it to the commands needed.");
+        f.add(C, Medium, "nopasswd", tr!("audit.accounts.nopasswd.title", "sudo grants root without a password"))
+            .detail(tr!("audit.accounts.nopasswd.detail", "Whoever gets into these accounts becomes root at once."))
+            .evidence(all_nopasswd.join("\n")).fix(tr!("audit.accounts.nopasswd.fix", "Remove NOPASSWD or limit it to the commands needed."));
     }
     let everyone: Vec<&str> = sudoers.iter().filter(|line| line.starts_with("ALL ") || line.contains("!authenticate")).copied().collect();
     if !everyone.is_empty() {
-        f.add(C, High, "sudo-everyone", "sudo is open to everyone or skips authentication").evidence(everyone.join("\n")).fix("Limit sudo to an admin group and remove !authenticate.");
+        f.add(C, High, "sudo-everyone", tr!("audit.accounts.sudo-everyone.title", "sudo is open to everyone or skips authentication"))
+            .evidence(everyone.join("\n")).fix(tr!("audit.accounts.sudo-everyone.fix", "Limit sudo to an admin group and remove !authenticate."));
     }
     for line in d.lines("accounts.groups") {
         let fields: Vec<&str> = line.split(':').collect();
@@ -904,12 +959,19 @@ fn accounts(d: &Data, root: bool, f: &mut Findings) {
         }
         let (group, members) = (fields[0], fields[3]);
         let (severity, why) = match group {
-            "docker" | "lxd" | "libvirt" => (Medium, "can start a container or VM with the host's disk mounted: equivalent to root"),
-            "disk" => (Medium, "can read and write raw disks: equivalent to root"),
-            "shadow" => (Medium, "can read password hashes"),
-            _ => (Info, "can run commands as root through sudo"),
+            "docker" | "lxd" | "libvirt" => (Medium, tr!("audit.accounts.group.container", "can start a container or VM with the host's disk mounted: equivalent to root")),
+            "disk" => (Medium, tr!("audit.accounts.group.disk", "can read and write raw disks: equivalent to root")),
+            "shadow" => (Medium, tr!("audit.accounts.group.shadow", "can read password hashes")),
+            _ => (Info, tr!("audit.accounts.group.default", "can run commands as root through sudo")),
         };
-        f.add(C, severity, &format!("group-{group}"), format!("Members of {group}: {members}")).detail(format!("Members of {group} {why}.")).evidence(line).fix(if severity == Info { "Keep this list to the people who administer the server." } else { "Remove whoever does not need it: sudo gpasswd -d <user> <group>" });
+        f.add(C, severity, &format!("group-{group}"), tr!("audit.accounts.group.title", "Members of {group}: {members}", group = group, members = members))
+            .detail(tr!("audit.accounts.group.detail", "Members of {group} {why}.", group = group, why = why))
+            .evidence(line)
+            .fix(if severity == Info {
+                tr!("audit.accounts.group.info.fix", "Keep this list to the people who administer the server.")
+            } else {
+                tr!("audit.accounts.group.fix", "Remove whoever does not need it: sudo gpasswd -d <user> <group>")
+            });
     }
     let mut weak_keys = Vec::new();
     let mut loose_files = Vec::new();
@@ -938,21 +1000,28 @@ fn accounts(d: &Data, root: bool, f: &mut Findings) {
         }
     }
     if !loose_files.is_empty() {
-        f.add(C, High, "authorized-keys-perms", "authorized_keys files writable by others").detail("Anyone who can write them can add a key and log in as that user.").evidence(loose_files.join("\n")).fix("chmod 600 ~/.ssh/authorized_keys");
+        f.add(C, High, "authorized-keys-perms", tr!("audit.accounts.authorized-keys-perms.title", "authorized_keys files writable by others"))
+            .detail(tr!("audit.accounts.authorized-keys-perms.detail", "Anyone who can write them can add a key and log in as that user."))
+            .evidence(loose_files.join("\n")).fix(Msg::raw("chmod 600 ~/.ssh/authorized_keys"));
     }
     if !weak_keys.is_empty() {
-        f.add(C, High, "weak-keys", "Weak keys can log in").evidence(weak_keys.join("\n")).fix("Replace them with ed25519 keys (ssh-keygen -t ed25519) and remove the old ones.");
+        f.add(C, High, "weak-keys", tr!("audit.accounts.weak-keys.title", "Weak keys can log in"))
+            .evidence(weak_keys.join("\n")).fix(tr!("audit.accounts.weak-keys.fix", "Replace them with ed25519 keys (ssh-keygen -t ed25519) and remove the old ones."));
     }
     if !all_keys.is_empty() {
-        f.add(C, Info, "keys", format!("{} keys can log in", all_keys.len())).detail("Check that you recognise every one of them.").evidence(all_keys.join("\n"));
+        f.add(C, Info, "keys", tr!("audit.accounts.keys.title", "{count} keys can log in", count = all_keys.len()))
+            .detail(tr!("audit.accounts.keys.detail", "Check that you recognise every one of them."))
+            .evidence(all_keys.join("\n"));
     }
     let policy = d.get("accounts.policy");
     let setting = |key: &str| policy.lines().find_map(|line| line.trim().strip_prefix(key).map(|rest| rest.trim().to_owned()));
     if setting("ENCRYPT_METHOD").is_some_and(|method| method == "MD5" || method == "DES") {
-        f.add(C, Medium, "encrypt-method", "New passwords are hashed with a weak method").evidence(policy).fix("Set ENCRYPT_METHOD SHA512 (or YESCRYPT) in /etc/login.defs");
+        f.add(C, Medium, "encrypt-method", tr!("audit.accounts.encrypt-method.title", "New passwords are hashed with a weak method"))
+            .evidence(policy).fix(tr!("audit.accounts.encrypt-method.fix", "Set ENCRYPT_METHOD SHA512 (or YESCRYPT) in /etc/login.defs"));
     }
     if setting("UMASK").is_some_and(|umask| umask.ends_with('0') || umask.ends_with('2') && umask.len() >= 3 && !umask.ends_with("22") && !umask.ends_with("27")) {
-        f.add(C, Low, "umask", "New files are writable by other users").evidence(policy).fix("Set UMASK 027 in /etc/login.defs");
+        f.add(C, Low, "umask", tr!("audit.accounts.umask.title", "New files are writable by other users"))
+            .evidence(policy).fix(tr!("audit.accounts.umask.fix", "Set UMASK 027 in /etc/login.defs"));
     }
 }
 
@@ -984,37 +1053,37 @@ fn files(d: &Data, f: &mut Findings) {
         }
     }
     if !escalate.is_empty() {
-        f.add(C, Critical, "suid-escalate", "SUID programs that give a root shell").detail("Any user can become root through these (see GTFOBins).").evidence(escalate.join("\n")).fix("sudo chmod u-s,g-s <path>");
+        f.add(C, Critical, "suid-escalate", tr!("audit.files.suid-escalate.title", "SUID programs that give a root shell")).detail(tr!("audit.files.suid-escalate.detail", "Any user can become root through these (see GTFOBins).")).evidence(escalate.join("\n")).fix(Msg::raw("sudo chmod u-s,g-s <path>"));
     }
     if !odd_place.is_empty() {
-        f.add(C, High, "suid-odd", "SUID programs in user-writable places").detail("A SUID program in /tmp or a home folder is a common backdoor.").evidence(odd_place.join("\n")).fix("Find out who put them there, then remove them.");
+        f.add(C, High, "suid-odd", tr!("audit.files.suid-odd.title", "SUID programs in user-writable places")).detail(tr!("audit.files.suid-odd.detail", "A SUID program in /tmp or a home folder is a common backdoor.")).evidence(odd_place.join("\n")).fix(tr!("audit.files.suid-odd.fix", "Find out who put them there, then remove them."));
     }
     if !unusual.is_empty() {
-        f.add(C, Low, "suid-unusual", format!("{} SUID/SGID programs outside the usual set", unusual.len())).detail("Check that each one is expected: every SUID program is a way to root if it has a bug.").evidence(unusual.join("\n")).fix("Remove the bit where not needed: sudo chmod u-s <path>");
+        f.add(C, Low, "suid-unusual", tr!("audit.files.suid-unusual.title", "{count} SUID/SGID programs outside the usual set", count = unusual.len())).detail(tr!("audit.files.suid-unusual.detail", "Check that each one is expected: every SUID program is a way to root if it has a bug.")).evidence(unusual.join("\n")).fix(tr!("audit.files.suid-unusual.fix", "Remove the bit where not needed: sudo chmod u-s <path>"));
     }
     if !suid.is_empty() {
-        f.add(C, Info, "suid", format!("{} SUID/SGID programs", suid.len())).evidence(suid.iter().map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect::<Vec<_>>().join("\n"));
+        f.add(C, Info, "suid", tr!("audit.files.suid.title", "{count} SUID/SGID programs", count = suid.len())).evidence(suid.iter().map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect::<Vec<_>>().join("\n"));
     }
     let writable: Vec<&str> = d.lines("files.writable").collect();
     if !writable.is_empty() {
-        f.add(C, High, "world-writable", format!("{} system files are writable by every user", writable.len())).detail("Any user can change these, and through them what root runs.").evidence(writable.join("\n")).fix("sudo chmod o-w <path>");
+        f.add(C, High, "world-writable", tr!("audit.files.world-writable.title", "{count} system files are writable by every user", count = writable.len())).detail(tr!("audit.files.world-writable.detail", "Any user can change these, and through them what root runs.")).evidence(writable.join("\n")).fix(Msg::raw("sudo chmod o-w <path>"));
     }
     let dirs: Vec<&str> = d.lines("files.dirs").collect();
     if !dirs.is_empty() {
-        f.add(C, Medium, "world-writable-dirs", "Directories writable by everyone without the sticky bit").detail("Any user can delete or replace the files of others in them.").evidence(dirs.join("\n")).fix("sudo chmod +t <dir> (or o-w)");
+        f.add(C, Medium, "world-writable-dirs", tr!("audit.files.world-writable-dirs.title", "Directories writable by everyone without the sticky bit")).detail(tr!("audit.files.world-writable-dirs.detail", "Any user can delete or replace the files of others in them.")).evidence(dirs.join("\n")).fix(Msg::raw("sudo chmod +t <dir> (or o-w)"));
     }
     let unowned: Vec<&str> = d.lines("files.unowned").collect();
     if !unowned.is_empty() {
-        f.add(C, Low, "unowned", format!("{} files belong to no user or group", unowned.len())).detail("Left by deleted accounts: a new account with the same id would own them.").evidence(unowned.join("\n")).fix("sudo chown root:root <path>, or delete them.");
+        f.add(C, Low, "unowned", tr!("audit.files.unowned.title", "{count} files belong to no user or group", count = unowned.len())).detail(tr!("audit.files.unowned.detail", "Left by deleted accounts: a new account with the same id would own them.")).evidence(unowned.join("\n")).fix(tr!("audit.files.unowned.fix", "sudo chown root:root <path>, or delete them."));
     }
     let risky_caps = ["cap_setuid", "cap_setgid", "cap_sys_admin", "cap_dac_override", "cap_dac_read_search", "cap_sys_ptrace", "cap_sys_module", "cap_chown", "cap_fowner"];
     let caps: Vec<&str> = d.lines("files.caps").filter(|line| risky_caps.iter().any(|cap| line.contains(cap))).collect();
     if !caps.is_empty() {
-        f.add(C, High, "capabilities", "Programs with root-level capabilities").detail("These capabilities let a program bypass file permissions or change its user: often a way to root.").evidence(caps.join("\n")).fix("sudo setcap -r <path>");
+        f.add(C, High, "capabilities", tr!("audit.files.capabilities.title", "Programs with root-level capabilities")).detail(tr!("audit.files.capabilities.detail", "These capabilities let a program bypass file permissions or change its user: often a way to root.")).evidence(caps.join("\n")).fix(Msg::raw("sudo setcap -r <path>"));
     }
     let homes: Vec<String> = ls_entries(d.get("files.homes")).into_iter().filter(|(mode, _, _)| others_may(mode, 'r')).map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect();
     if !homes.is_empty() {
-        f.add(C, Low, "homes", "Home folders readable by every user").evidence(homes.join("\n")).fix("chmod 750 <home>");
+        f.add(C, Low, "homes", tr!("audit.files.homes.title", "Home folders readable by every user")).evidence(homes.join("\n")).fix(Msg::raw("chmod 750 <home>"));
     }
 }
 
@@ -1058,41 +1127,40 @@ fn listeners(d: &Data) -> Vec<Listener> {
     found
 }
 
-fn risky(proto: &str, port: u16) -> Option<(&'static str, Severity)> {
+fn risky(proto: &str, port: u16) -> Option<(Msg, Severity)> {
     Some(match (proto, port) {
-        ("tcp", 23) => ("Telnet (unencrypted remote login)", Critical),
-        ("tcp", 2375) => ("The Docker API without TLS (root on the host)", Critical),
-        ("tcp", 2379 | 2380) => ("etcd", Critical),
-        ("tcp", 512..=514) => ("r-services (rexec, rlogin, rsh)", Critical),
-        ("tcp", 21) => ("FTP (unencrypted)", Medium),
-        ("udp", 69) => ("TFTP", High),
-        ("tcp" | "udp", 111) => ("rpcbind", Medium),
-        ("tcp", 139 | 445) => ("SMB file sharing", High),
-        ("tcp", 873) => ("The rsync daemon", Medium),
-        ("tcp", 1433) => ("Microsoft SQL Server", High),
-        ("tcp", 1521) => ("Oracle database", High),
-        ("tcp", 2049) => ("NFS", Medium),
-        ("tcp", 2376) => ("The Docker API (TLS)", Medium),
-        ("tcp", 3306) => ("MySQL/MariaDB", High),
-        ("tcp", 3389) => ("RDP", High),
-        ("tcp", 5432) => ("PostgreSQL", High),
-        ("tcp", 5672) => ("AMQP (RabbitMQ)", Medium),
-        ("tcp", 5900..=5910) => ("VNC", High),
-        ("tcp", 5984) => ("CouchDB", High),
-        ("tcp", 6379) => ("Redis", High),
-        ("tcp", 6443) => ("The Kubernetes API", Medium),
-        ("tcp", 8086) => ("InfluxDB", Medium),
-        ("tcp", 9090) => ("An admin panel (Prometheus, Cockpit)", Medium),
-        ("tcp", 9200 | 9300) => ("Elasticsearch", High),
-        ("tcp", 10250) => ("The Kubelet API", High),
-        ("tcp" | "udp", 11211) => ("Memcached", High),
-        ("tcp", 15672) => ("RabbitMQ management", Medium),
-        ("tcp", 27017 | 27018) => ("MongoDB", High),
-        ("udp", 161) => ("SNMP", Medium),
+        ("tcp", 23) => (tr!("audit.network.risky.telnet", "Telnet (unencrypted remote login)"), Critical),
+        ("tcp", 2375) => (tr!("audit.network.risky.docker-no-tls", "The Docker API without TLS (root on the host)"), Critical),
+        ("tcp", 2379 | 2380) => (Msg::raw("etcd"), Critical),
+        ("tcp", 512..=514) => (tr!("audit.network.risky.r-services", "r-services (rexec, rlogin, rsh)"), Critical),
+        ("tcp", 21) => (tr!("audit.network.risky.ftp", "FTP (unencrypted)"), Medium),
+        ("udp", 69) => (Msg::raw("TFTP"), High),
+        ("tcp" | "udp", 111) => (Msg::raw("rpcbind"), Medium),
+        ("tcp", 139 | 445) => (tr!("audit.network.risky.smb", "SMB file sharing"), High),
+        ("tcp", 873) => (tr!("audit.network.risky.rsync", "The rsync daemon"), Medium),
+        ("tcp", 1433) => (Msg::raw("Microsoft SQL Server"), High),
+        ("tcp", 1521) => (tr!("audit.network.risky.oracle", "Oracle database"), High),
+        ("tcp", 2049) => (Msg::raw("NFS"), Medium),
+        ("tcp", 2376) => (tr!("audit.network.risky.docker-tls", "The Docker API (TLS)"), Medium),
+        ("tcp", 3306) => (Msg::raw("MySQL/MariaDB"), High),
+        ("tcp", 3389) => (Msg::raw("RDP"), High),
+        ("tcp", 5432) => (Msg::raw("PostgreSQL"), High),
+        ("tcp", 5672) => (Msg::raw("AMQP (RabbitMQ)"), Medium),
+        ("tcp", 5900..=5910) => (Msg::raw("VNC"), High),
+        ("tcp", 5984) => (Msg::raw("CouchDB"), High),
+        ("tcp", 6379) => (Msg::raw("Redis"), High),
+        ("tcp", 6443) => (tr!("audit.network.risky.kubernetes", "The Kubernetes API"), Medium),
+        ("tcp", 8086) => (Msg::raw("InfluxDB"), Medium),
+        ("tcp", 9090) => (tr!("audit.network.risky.admin-panel", "An admin panel (Prometheus, Cockpit)"), Medium),
+        ("tcp", 9200 | 9300) => (Msg::raw("Elasticsearch"), High),
+        ("tcp", 10250) => (tr!("audit.network.risky.kubelet", "The Kubelet API"), High),
+        ("tcp" | "udp", 11211) => (Msg::raw("Memcached"), High),
+        ("tcp", 15672) => (tr!("audit.network.risky.rabbitmq-management", "RabbitMQ management"), Medium),
+        ("tcp", 27017 | 27018) => (Msg::raw("MongoDB"), High),
+        ("udp", 161) => (Msg::raw("SNMP"), Medium),
         _ => return None,
     })
 }
-
 /// Which of the exposed TCP ports this device can connect to.
 fn probe(address: &str, listeners: &[Listener]) -> HashMap<u16, bool> {
     let ports: BTreeSet<u16> = listeners.iter().filter(|listener| listener.proto == "tcp" && listener.exposed()).map(|listener| listener.port).collect();
@@ -1109,33 +1177,33 @@ fn network(d: &Data, root: bool, reach: &HashMap<u16, bool>, f: &mut Findings) {
     const C: &str = "network";
     let all = listeners(d);
     let mark = |listener: &Listener| match (listener.proto.as_str(), reach.get(&listener.port)) {
-        ("tcp", Some(true)) => "  [reachable from this device]",
-        ("tcp", Some(false)) => "  [not reachable from this device]",
-        _ => "",
+        ("tcp", Some(true)) => tr!("audit.network.reachable_mark", "  [reachable from this device]"),
+        ("tcp", Some(false)) => tr!("audit.network.unreachable_mark", "  [not reachable from this device]"),
+        _ => Msg::default(),
     };
     if all.is_empty() {
         if d.has("network.listen") {
-            f.add(C, Info, "listen-unread", "The listening ports could not be listed").detail("Neither ss nor netstat answered.");
+            f.add(C, Info, "listen-unread", tr!("audit.network.listen-unread.title", "The listening ports could not be listed")).detail(tr!("audit.network.listen-unread.detail", "Neither ss nor netstat answered."));
         }
     } else {
         let exposed: Vec<&Listener> = all.iter().filter(|listener| listener.exposed()).collect();
-        f.add(C, Info, "listening", format!("{} services listen on the network, {} only on this machine", exposed.len(), all.len() - exposed.len()))
-            .detail("Everything that listens beyond 127.0.0.1 can be reached by whoever reaches the server, unless a firewall stops it.")
+        f.add(C, Info, "listening", tr!("audit.network.listening.title", "{exposed} services listen on the network, {local} only on this machine", exposed = exposed.len(), local = all.len() - exposed.len()))
+            .detail(tr!("audit.network.listening.detail", "Everything that listens beyond 127.0.0.1 can be reached by whoever reaches the server, unless a firewall stops it."))
             .evidence(all.iter().map(|listener| format!("{}{}", listener.line(), mark(listener))).collect::<Vec<_>>().join("\n"))
-            .fix("Bind what is only used locally to 127.0.0.1 and stop what is not used.");
+            .fix(tr!("audit.network.listening.fix", "Bind what is only used locally to 127.0.0.1 and stop what is not used."));
         for listener in &exposed {
             let Some((what, severity)) = risky(&listener.proto, listener.port) else { continue };
             let reachable = if listener.proto == "tcp" { reach.get(&listener.port).copied() } else { None };
             let severity = if reachable == Some(false) { severity.lower() } else { severity };
-            let suffix = if reachable == Some(true) { ", reachable from this device" } else { "" };
-            f.add(C, severity, &format!("port-{}-{}", listener.proto, listener.port), format!("{what} listens on {}:{}{suffix}", listener.address, listener.port))
-                .detail("This service is often attacked when exposed: it should only listen on 127.0.0.1 or a private network, behind a firewall.")
+            let suffix = if reachable == Some(true) { tr!("audit.network.reachable", ", reachable from this device") } else { Msg::default() };
+            f.add(C, severity, &format!("port-{}-{}", listener.proto, listener.port), tr!("audit.network.port.title", "{what} listens on {address}:{port}{suffix}", what = what, address = listener.address.clone(), port = listener.port, suffix = suffix))
+                .detail(tr!("audit.network.port.detail", "This service is often attacked when exposed: it should only listen on 127.0.0.1 or a private network, behind a firewall."))
                 .evidence(format!("{}{}", listener.line(), mark(listener)))
-                .fix("Bind it to 127.0.0.1 (or a private address) in its configuration, or allow only known addresses in the firewall.");
+                .fix(tr!("audit.network.port.fix", "Bind it to 127.0.0.1 (or a private address) in its configuration, or allow only known addresses in the firewall."));
         }
         let reachable: Vec<String> = all.iter().filter(|listener| listener.proto == "tcp" && reach.get(&listener.port) == Some(&true)).map(Listener::line).collect();
         if !reachable.is_empty() {
-            f.add(C, Info, "reachable", format!("{} ports answer from this device", reachable.len())).evidence(reachable.join("\n"));
+            f.add(C, Info, "reachable", tr!("audit.network.reachable.title", "{count} ports answer from this device", count = reachable.len())).evidence(reachable.join("\n"));
         }
     }
     if d.has("network.firewall") {
@@ -1148,12 +1216,12 @@ fn network(d: &Data, root: bool, reach: &HashMap<u16, bool>, f: &mut Findings) {
             || rules.lines().any(|line| line.starts_with("-P INPUT DROP") || (line.starts_with("-A INPUT") && (line.contains("DROP") || line.contains("REJECT"))));
         if !active {
             if root {
-                f.add(C, Medium, "firewall", "No firewall filters incoming traffic")
-                    .detail("Every port that listens is reachable by whoever reaches the server.")
+                f.add(C, Medium, "firewall", tr!("audit.network.firewall.title", "No firewall filters incoming traffic"))
+                    .detail(tr!("audit.network.firewall.detail", "Every port that listens is reachable by whoever reaches the server."))
                     .evidence(rules)
-                    .fix("Turn on a firewall that only lets in what is needed, e.g. sudo ufw allow OpenSSH && sudo ufw enable");
+                    .fix(tr!("audit.network.firewall.fix", "Turn on a firewall that only lets in what is needed, e.g. sudo ufw allow OpenSSH && sudo ufw enable"));
             } else {
-                f.add(C, Info, "firewall-unread", "The firewall could not be checked").detail("Reading the firewall rules needs root.");
+                f.add(C, Info, "firewall-unread", tr!("audit.network.firewall-unread.title", "The firewall could not be checked")).detail(tr!("audit.network.firewall-unread.detail", "Reading the firewall rules needs root."));
             }
         }
     }
@@ -1170,52 +1238,54 @@ fn services(d: &Data, cve: bool, f: &mut Findings) {
     let running: Vec<&str> = d.lines("services.running").collect();
     let legacy: Vec<&str> = running.iter().filter(|unit| ["telnet", "rsh", "rlogin", "rexec", "tftp", "xinetd", "vsftpd", "proftpd", "pure-ftpd", "nis", "ypbind", "talk"].iter().any(|name| unit.starts_with(name))).copied().collect();
     if !legacy.is_empty() {
-        f.add(C, Medium, "legacy", "Legacy cleartext services are running").detail("These send passwords and data unencrypted.").evidence(legacy.join("\n")).fix("Stop and disable them (sudo systemctl disable --now <unit>), use SSH/SFTP instead.");
+        f.add(C, Medium, "legacy", tr!("audit.services.legacy.title", "Legacy cleartext services are running")).detail(tr!("audit.services.legacy.detail", "These send passwords and data unencrypted.")).evidence(legacy.join("\n")).fix(tr!("audit.services.legacy.fix", "Stop and disable them (sudo systemctl disable --now <unit>), use SSH/SFTP instead."));
     }
     let failed: Vec<&str> = d.lines("services.failed").collect();
     if !failed.is_empty() {
-        f.add(C, Low, "failed", format!("{} services failed", failed.len())).detail("A failed service can be a security tool that stopped (firewall, fail2ban, backups).").evidence(failed.join("\n")).fix("Check each with systemctl status <unit>.");
+        f.add(C, Low, "failed", tr!("audit.services.failed.title", "{count} services failed", count = failed.len())).detail(tr!("audit.services.failed.detail", "A failed service can be a security tool that stopped (firewall, fail2ban, backups).")).evidence(failed.join("\n")).fix(tr!("audit.services.failed.fix", "Check each with systemctl status <unit>."));
     }
     if !running.is_empty() {
-        f.add(C, Info, "running", format!("{} services running", running.len())).evidence(running.join("\n"));
+        f.add(C, Info, "running", tr!("audit.services.running.title", "{count} services running", count = running.len())).evidence(running.join("\n"));
     }
     let versions: Vec<(&str, &str, Option<&str>)> = d.lines("services.versions").filter_map(|line| line.split_once(": ").map(|(name, text)| (name, text, first_version(text)))).collect();
     for (name, text, version) in &versions {
         let Some(version) = version else { continue };
         let eol = match *name {
-            "php" => below(version, "8.2").then_some((Medium, "PHP before 8.2 no longer gets security fixes from php.net")),
-            "node" => below(version, "20").then_some((Medium, "Node.js before 20 no longer gets security fixes")),
-            "python3" => below(version, "3.10").then_some((Low, "Python before 3.10 no longer gets security fixes from python.org")),
-            "openssl" => below(version, "3").then_some((Low, "OpenSSL 1.x is out of upstream support (some distributions still patch it)")),
-            "sudo" if !cve && !text.contains("sudo-rs") => below(version, "1.9.5p2").then_some((High, "sudo before 1.9.5p2 may allow any user to become root (Baron Samedit, CVE-2021-3156) unless the distribution backported the fix")),
+            "php" => below(version, "8.2").then_some((Medium, tr!("audit.services.php", "PHP before 8.2 no longer gets security fixes from php.net"))),
+            "node" => below(version, "20").then_some((Medium, tr!("audit.services.node", "Node.js before 20 no longer gets security fixes"))),
+            "python3" => below(version, "3.10").then_some((Low, tr!("audit.services.python", "Python before 3.10 no longer gets security fixes from python.org"))),
+            "openssl" => below(version, "3").then_some((Low, tr!("audit.services.openssl", "OpenSSL 1.x is out of upstream support (some distributions still patch it)"))),
+            "sudo" if !cve && !text.contains("sudo-rs") => below(version, "1.9.5p2").then_some((High, tr!("audit.services.sudo", "sudo before 1.9.5p2 may allow any user to become root (Baron Samedit, CVE-2021-3156) unless the distribution backported the fix"))),
             _ => None,
         };
         if let Some((severity, why)) = eol {
-            f.add(C, severity, &format!("old-{name}"), format!("{name} {version} is outdated")).detail(why).evidence(*text).fix(format!("Upgrade {name}."));
+            f.add(C, severity, &format!("old-{name}"), tr!("audit.services.old.title", "{name} {version} is outdated", name = *name, version = *version)).detail(why).evidence(*text).fix(tr!("audit.services.old.fix", "Upgrade {name}.", name = *name));
         }
     }
     if !versions.is_empty() {
-        f.add(C, Info, "versions", "Software versions").evidence(versions.iter().map(|(name, text, _)| format!("{name}: {text}")).collect::<Vec<_>>().join("\n"));
+        f.add(C, Info, "versions", tr!("audit.services.versions.title", "Software versions")).evidence(versions.iter().map(|(name, text, _)| format!("{name}: {text}")).collect::<Vec<_>>().join("\n"));
     }
     let cron: Vec<&str> = d.lines("services.cronwritable").collect();
     if !cron.is_empty() {
-        f.add(C, Critical, "cron-writable", "Jobs that root runs are writable by every user").detail("Any user can add commands that run as root.").evidence(cron.join("\n")).fix("sudo chmod o-w <path>");
+        f.add(C, Critical, "cron-writable", tr!("audit.services.cron-writable.title", "Jobs that root runs are writable by every user")).detail(tr!("audit.services.cron-writable.detail", "Any user can add commands that run as root.")).evidence(cron.join("\n")).fix(Msg::raw("sudo chmod o-w <path>"));
     }
     let units: Vec<&str> = d.lines("services.unitwritable").collect();
     if !units.is_empty() {
-        f.add(C, Critical, "unit-writable", "systemd units writable by every user").detail("Any user can change what these services run as root.").evidence(units.join("\n")).fix("sudo chmod o-w <path>");
+        f.add(C, Critical, "unit-writable", tr!("audit.services.unit-writable.title", "systemd units writable by every user")).detail(tr!("audit.services.unit-writable.detail", "Any user can change what these services run as root.")).evidence(units.join("\n")).fix(Msg::raw("sudo chmod o-w <path>"));
     }
     let jobs = format!("{}\n{}", d.get("services.cron").trim(), d.get("services.timers").trim());
     if !jobs.trim().is_empty() {
-        f.add(C, Info, "scheduled", "Scheduled jobs").detail("Check that you recognise every job: attackers hide their persistence here.").evidence(jobs.trim());
+        f.add(C, Info, "scheduled", tr!("audit.services.scheduled.title", "Scheduled jobs")).detail(tr!("audit.services.scheduled.detail", "Check that you recognise every job: attackers hide their persistence here.")).evidence(jobs.trim());
     }
 }
-
 fn containers(d: &Data, f: &mut Findings) {
     const C: &str = "containers";
     for (mode, owner, path) in ls_entries(d.get("containers.sockets")) {
         if others_may(&mode, 'w') {
-            f.add(C, Critical, "socket", format!("{path} is open to every user")).detail("Whoever talks to the container engine is root on the host.").evidence(format!("{mode} {owner} {path}")).fix(format!("sudo chmod 660 {path}"));
+            f.add(C, Critical, "socket", tr!("audit.containers.socket.title", "{path} is open to every user", path = path.clone()))
+                .detail(tr!("audit.containers.socket.detail", "Whoever talks to the container engine is root on the host."))
+                .evidence(format!("{mode} {owner} {path}"))
+                .fix(Msg::raw(format!("sudo chmod 660 {path}")));
         }
     }
     let ufw = d.get("network.firewall").contains("Status: active");
@@ -1228,33 +1298,54 @@ fn containers(d: &Data, f: &mut Findings) {
         }
         let name = fields[0].trim_start_matches('/');
         let image = fields[1];
-        let mut issue = |severity: Severity, id: &str, title: String, detail: &str, fix: &str| {
+        let mut issue = |severity: Severity, id: &str, title: Msg, detail: Msg, fix: Msg| {
             f.add(C, severity, &format!("{id}-{name}"), title).detail(detail).evidence(line).fix(fix);
         };
         if fields[2] == "true" {
-            issue(High, "privileged", format!("Container {name} runs privileged"), "A privileged container can take over the host.", "Drop --privileged and add only the capabilities it needs.");
+            issue(High, "privileged",
+                tr!("audit.containers.privileged.title", "Container {name} runs privileged", name = name),
+                tr!("audit.containers.privileged.detail", "A privileged container can take over the host."),
+                tr!("audit.containers.privileged.fix", "Drop --privileged and add only the capabilities it needs."));
         }
         if fields[3] == "host" {
-            issue(Low, "host-network", format!("Container {name} shares the host network"), "It sees and binds every interface of the host.", "Use a bridge network and publish only the ports needed.");
+            issue(Low, "host-network",
+                tr!("audit.containers.host-network.title", "Container {name} shares the host network", name = name),
+                tr!("audit.containers.host-network.detail", "It sees and binds every interface of the host."),
+                tr!("audit.containers.host-network.fix", "Use a bridge network and publish only the ports needed."));
         }
         if fields[4] == "host" {
-            issue(Medium, "host-pid", format!("Container {name} shares the host processes"), "It can see and signal every process of the host.", "Remove --pid=host.");
+            issue(Medium, "host-pid",
+                tr!("audit.containers.host-pid.title", "Container {name} shares the host processes", name = name),
+                tr!("audit.containers.host-pid.detail", "It can see and signal every process of the host."),
+                tr!("audit.containers.host-pid.fix", "Remove --pid=host."));
         }
         let mounts: Vec<&str> = fields[5].split(',').filter(|mount| !mount.is_empty()).collect();
         if mounts.iter().any(|mount| mount.contains("docker.sock") || mount.contains("containerd.sock")) {
-            issue(High, "socket-mount", format!("Container {name} has the container engine socket"), "Whoever controls the container controls the host.", "Remove the socket mount or use a filtering proxy.");
+            issue(High, "socket-mount",
+                tr!("audit.containers.socket-mount.title", "Container {name} has the container engine socket", name = name),
+                tr!("audit.containers.socket-mount.detail", "Whoever controls the container controls the host."),
+                tr!("audit.containers.socket-mount.fix", "Remove the socket mount or use a filtering proxy."));
         }
         if mounts.iter().any(|mount| {
             let parts: Vec<&str> = mount.split(':').collect();
             parts.len() >= 3 && ["/", "/etc", "/root", "/boot", "/usr"].contains(&parts[0]) && parts[2] == "true"
         }) {
-            issue(High, "host-mount", format!("Container {name} can write system folders of the host"), "A writable /, /etc or /root mount lets it take over the host.", "Mount these read-only or not at all.");
+            issue(High, "host-mount",
+                tr!("audit.containers.host-mount.title", "Container {name} can write system folders of the host", name = name),
+                tr!("audit.containers.host-mount.detail", "A writable /, /etc or /root mount lets it take over the host."),
+                tr!("audit.containers.host-mount.fix", "Mount these read-only or not at all."));
         }
         if fields[6].contains("SYS_ADMIN") || fields[6].contains("ALL") {
-            issue(High, "caps", format!("Container {name} has SYS_ADMIN or every capability"), "That is almost as strong as --privileged.", "Remove --cap-add SYS_ADMIN/ALL.");
+            issue(High, "caps",
+                tr!("audit.containers.caps.title", "Container {name} has SYS_ADMIN or every capability", name = name),
+                tr!("audit.containers.caps.detail", "That is almost as strong as --privileged."),
+                tr!("audit.containers.caps.fix", "Remove --cap-add SYS_ADMIN/ALL."));
         }
         if fields[9].contains("unconfined") {
-            issue(Medium, "unconfined", format!("Container {name} runs without seccomp or AppArmor"), "Its kernel attack surface is unfiltered.", "Remove the unconfined security options.");
+            issue(Medium, "unconfined",
+                tr!("audit.containers.unconfined.title", "Container {name} runs without seccomp or AppArmor", name = name),
+                tr!("audit.containers.unconfined.detail", "Its kernel attack surface is unfiltered."),
+                tr!("audit.containers.unconfined.fix", "Remove the unconfined security options."));
         }
         if fields[7].is_empty() || fields[7] == "root" || fields[7] == "0" {
             as_root.push(format!("{name} ({image})"));
@@ -1266,19 +1357,34 @@ fn containers(d: &Data, f: &mut Findings) {
         }
     }
     if !as_root.is_empty() {
-        f.add(C, Low, "root-user", format!("{} containers run as root", as_root.len())).detail("An escape from a root container lands as root on the host.").evidence(as_root.join("\n")).fix("Set USER in the image or --user when starting it.");
+        f.add(C, Low, "root-user", tr!("audit.containers.root-user.title", "{count} containers run as root", count = as_root.len()))
+            .detail(tr!("audit.containers.root-user.detail", "An escape from a root container lands as root on the host."))
+            .evidence(as_root.join("\n"))
+            .fix(tr!("audit.containers.root-user.fix", "Set USER in the image or --user when starting it."));
     }
     if !published.is_empty() {
-        let (severity, detail) = if ufw { (Medium, "Docker writes its own iptables rules: these ports are reachable even though ufw would block them.") } else { (Info, "These ports are published on every interface of the host.") };
-        f.add(C, severity, "published", format!("{} container ports are published on every interface", published.len())).detail(detail).evidence(published.join("\n")).fix("Publish on 127.0.0.1 (-p 127.0.0.1:port:port) what only a local proxy uses.");
+        let (severity, detail) = if ufw {
+            (Medium, tr!("audit.containers.published.detail.ufw", "Docker writes its own iptables rules: these ports are reachable even though ufw would block them."))
+        } else {
+            (Info, tr!("audit.containers.published.detail", "These ports are published on every interface of the host."))
+        };
+        f.add(C, severity, "published", tr!("audit.containers.published.title", "{count} container ports are published on every interface", count = published.len()))
+            .detail(detail)
+            .evidence(published.join("\n"))
+            .fix(tr!("audit.containers.published.fix", "Publish on 127.0.0.1 (-p 127.0.0.1:port:port) what only a local proxy uses."));
     }
     let daemon = d.get("containers.daemon");
     if daemon.contains("tcp://") && !daemon.contains("tlsverify") {
-        f.add(C, Critical, "daemon-tcp", "The Docker daemon listens on TCP without TLS verification").evidence(daemon).fix("Remove the tcp:// host or turn on tlsverify.");
+        f.add(C, Critical, "daemon-tcp", tr!("audit.containers.daemon-tcp.title", "The Docker daemon listens on TCP without TLS verification"))
+            .evidence(daemon)
+            .fix(tr!("audit.containers.daemon-tcp.fix", "Remove the tcp:// host or turn on tlsverify."));
     }
     let images: Vec<&str> = d.lines("containers.images").filter(|line| line.contains("months") || line.contains("years")).collect();
     if !images.is_empty() {
-        f.add(C, Low, "old-images", format!("{} images are months or years old", images.len())).detail("Old images carry old libraries with known vulnerabilities.").evidence(images.join("\n")).fix("Rebuild or pull them again and recreate the containers.");
+        f.add(C, Low, "old-images", tr!("audit.containers.old-images.title", "{count} images are months or years old", count = images.len()))
+            .detail(tr!("audit.containers.old-images.detail", "Old images carry old libraries with known vulnerabilities."))
+            .evidence(images.join("\n"))
+            .fix(tr!("audit.containers.old-images.fix", "Rebuild or pull them again and recreate the containers."));
     }
 }
 
@@ -1290,19 +1396,29 @@ fn logs(d: &Data, f: &mut Findings) {
     let protected = active("fail2ban") || active("crowdsec");
     if failures > 50 {
         let severity = if protected { Info } else { Medium };
-        f.add(C, severity, "brute-force", format!("{failures} failed SSH logins recently"))
-            .detail(if protected { "Login guessing is going on; fail2ban or CrowdSec is blocking the sources." } else { "Login guessing is going on and nothing blocks the sources." })
+        f.add(C, severity, "brute-force", tr!("audit.logs.brute-force.title", "{failures} failed SSH logins recently", failures = failures))
+            .detail(if protected {
+                tr!("audit.logs.brute-force.detail.protected", "Login guessing is going on; fail2ban or CrowdSec is blocking the sources.")
+            } else {
+                tr!("audit.logs.brute-force.detail", "Login guessing is going on and nothing blocks the sources.")
+            })
             .evidence(d.get("logs.sources"))
-            .fix("Use keys only (PasswordAuthentication no) and install fail2ban or CrowdSec.");
+            .fix(tr!("audit.logs.brute-force.fix", "Use keys only (PasswordAuthentication no) and install fail2ban or CrowdSec."));
     } else if !protected && d.has("logs.defenses") {
-        f.add(C, Low, "no-blocking", "Nothing blocks login guessing").detail("Neither fail2ban nor CrowdSec is running.").fix("sudo apt-get install fail2ban (or CrowdSec)");
+        f.add(C, Low, "no-blocking", tr!("audit.logs.no-blocking.title", "Nothing blocks login guessing"))
+            .detail(tr!("audit.logs.no-blocking.detail", "Neither fail2ban nor CrowdSec is running."))
+            .fix(tr!("audit.logs.no-blocking.fix", "sudo apt-get install fail2ban (or CrowdSec)"));
     }
     if d.has("logs.defenses") && !active("auditd") {
-        f.add(C, Info, "auditd", "auditd is not running").detail("Without it, who changed which file and ran what is not recorded for an investigation.").fix("sudo apt-get install auditd (or dnf install audit) and enable it.");
+        f.add(C, Info, "auditd", tr!("audit.logs.auditd.title", "auditd is not running"))
+            .detail(tr!("audit.logs.auditd.detail", "Without it, who changed which file and ran what is not recorded for an investigation."))
+            .fix(tr!("audit.logs.auditd.fix", "sudo apt-get install auditd (or dnf install audit) and enable it."));
     }
     let logins: Vec<&str> = d.lines("logs.logins").collect();
     if !logins.is_empty() {
-        f.add(C, Info, "logins", "Recent logins").detail("Check that you recognise every source.").evidence(logins.join("\n"));
+        f.add(C, Info, "logins", tr!("audit.logs.logins.title", "Recent logins"))
+            .detail(tr!("audit.logs.logins.detail", "Check that you recognise every source."))
+            .evidence(logins.join("\n"));
     }
 }
 
@@ -1312,21 +1428,30 @@ fn secrets(d: &Data, f: &mut Findings) {
     // A .pem is often only a certificate: listed, not flagged.
     let open: Vec<String> = found.iter().filter(|(mode, _, path)| others_may(mode, 'r') && !path.ends_with(".pem")).map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect();
     if !open.is_empty() {
-        f.add(C, High, "readable", format!("{} key or credential files are readable by every user", open.len())).evidence(open.join("\n")).fix("chmod 600 <file>");
+        f.add(C, High, "readable", tr!("audit.secrets.readable.title", "{count} key or credential files are readable by every user", count = open.len()))
+            .evidence(open.join("\n"))
+            .fix(Msg::raw("chmod 600 <file>"));
     }
     if !found.is_empty() {
-        f.add(C, Info, "files", format!("{} key or credential files", found.len())).detail("Only their paths were read. Check that each one needs to be on this server.").evidence(found.iter().map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect::<Vec<_>>().join("\n"));
+        f.add(C, Info, "files", tr!("audit.secrets.files.title", "{count} key or credential files", count = found.len()))
+            .detail(tr!("audit.secrets.files.detail", "Only their paths were read. Check that each one needs to be on this server."))
+            .evidence(found.iter().map(|(mode, owner, path)| format!("{mode} {owner} {path}")).collect::<Vec<_>>().join("\n"));
     }
     let history: Vec<&str> = d.lines("secrets.history").filter(|line| line.split_whitespace().next().and_then(|count| count.parse::<u32>().ok()).is_some_and(|count| count > 0)).collect();
     if !history.is_empty() {
-        f.add(C, Medium, "history", "Shell histories hold what looks like passwords or tokens").detail("Lines that match password=, token=, IDENTIFIED BY and similar (counted here, not read).").evidence(history.join("\n")).fix("Rotate those credentials and clear the lines from the history files.");
+        f.add(C, Medium, "history", tr!("audit.secrets.history.title", "Shell histories hold what looks like passwords or tokens"))
+            .detail(tr!("audit.secrets.history.detail", "Lines that match password=, token=, IDENTIFIED BY and similar (counted here, not read)."))
+            .evidence(history.join("\n"))
+            .fix(tr!("audit.secrets.history.fix", "Rotate those credentials and clear the lines from the history files."));
     }
     let web: Vec<&str> = d.lines("secrets.web").collect();
     if !web.is_empty() {
-        f.add(C, High, "web", "Sensitive files inside web folders").detail("Repositories, .env files, dumps and backups under a web root are often downloadable.").evidence(web.join("\n")).fix("Move them out of the web root or deny them in the web server.");
+        f.add(C, High, "web", tr!("audit.secrets.web.title", "Sensitive files inside web folders"))
+            .detail(tr!("audit.secrets.web.detail", "Repositories, .env files, dumps and backups under a web root are often downloadable."))
+            .evidence(web.join("\n"))
+            .fix(tr!("audit.secrets.web.fix", "Move them out of the web root or deny them in the web server."));
     }
 }
-
 // --- CVE matching (OSV.dev) ------------------------------------------------------------------------
 
 struct Package {
@@ -1451,7 +1576,6 @@ fn query(agent: &ureq::Agent, ecosystems: &[String], packages: &[Package]) -> Re
     }
     Ok(found.into_iter().filter(|(_, ids)| !ids.is_empty()).map(|(index, ids)| (index, ids.into_iter().collect())).collect())
 }
-
 fn details(agent: &ureq::Agent, ids: &[String]) -> HashMap<String, Value> {
     let found = Mutex::new(HashMap::new());
     let next = AtomicUsize::new(0);
@@ -1529,7 +1653,7 @@ struct Vuln {
 fn vuln(id: &str, value: Option<&Value>, package: &str) -> Vuln {
     let own = id.find("CVE-").map(|start| id[start..].to_owned());
     let Some(value) = value else {
-        return Vuln { name: id.to_owned(), key: own.clone().unwrap_or_else(|| id.to_owned()), cves: own.into_iter().collect(), severity: Medium, summary: "(details unavailable)".into(), fixed: None };
+        return Vuln { name: id.to_owned(), key: own.clone().unwrap_or_else(|| id.to_owned()), cves: own.into_iter().collect(), severity: Medium, summary: tr!("audit.cve.details_unavailable", "(details unavailable)").to_string(), fixed: None };
     };
     let mut severity = None;
     for entry in value["severity"].as_array().into_iter().flatten() {
@@ -1572,40 +1696,39 @@ fn vuln(id: &str, value: Option<&Value>, package: &str) -> Vuln {
     let summary = value["summary"].as_str().filter(|text| !text.is_empty()).or_else(|| value["details"].as_str()).unwrap_or("").lines().next().unwrap_or("").chars().take(180).collect();
     Vuln { name, key, cves, severity, summary, fixed }
 }
-
 /// Matches the installed packages against OSV.dev; also returns every CVE it reported, so the
 /// server's own advisories do not repeat them.
-fn cves(d: &Data, os: &HashMap<String, String>, f: &mut Findings, progress: &dyn Fn(&str)) -> (Value, HashSet<String>) {
+fn cves(d: &Data, os: &HashMap<String, String>, f: &mut Findings, progress: &dyn Fn(&Msg)) -> (Value, HashSet<String>) {
     const C: &str = "cve";
     let mut covered = HashSet::new();
     let packages = inventory(d);
     if packages.is_empty() {
-        f.add(C, Info, "none", "No package list to match against CVEs").detail("No dpkg, rpm or apk database could be read.");
+        f.add(C, Info, "none", tr!("audit.cve.none.title", "No package list to match against CVEs")).detail(tr!("audit.cve.none.detail", "No dpkg, rpm or apk database could be read."));
         return (json!({ "status": "no packages" }), covered);
     }
-    let pretty = os.get("PRETTY_NAME").map_or("this system", String::as_str);
+    let pretty = os.get("PRETTY_NAME").map_or_else(|| tr!("audit.cve.this-system", "this system"), |name| Msg::raw(name.as_str()));
     let Some(source) = source(os) else {
-        f.add(C, Info, "unsupported", format!("OSV.dev has no advisories for {pretty}"))
-            .detail("OSV.dev covers Debian, Ubuntu, Alpine, RHEL, AlmaLinux, Rocky Linux, CentOS and Oracle Linux (through RHEL), SUSE, openSUSE, Azure Linux, openEuler, Mageia, Wolfi and Chainguard. The server's own security advisories (dnf, yum, zypper) are still used when the Packages check is on.");
+        f.add(C, Info, "unsupported", tr!("audit.cve.unsupported.title", "OSV.dev has no advisories for {pretty}", pretty = pretty.clone()))
+            .detail(tr!("audit.cve.unsupported.detail", "OSV.dev covers Debian, Ubuntu, Alpine, RHEL, AlmaLinux, Rocky Linux, CentOS and Oracle Linux (through RHEL), SUSE, openSUSE, Azure Linux, openEuler, Mageia, Wolfi and Chainguard. The server's own security advisories (dnf, yum, zypper) are still used when the Packages check is on."));
         return (json!({ "status": "unsupported" }), covered);
     };
     let ecosystems = source.ecosystems.join(", ");
-    progress(&format!("Matching {} packages against OSV.dev…", packages.len()));
+    progress(&tr!("audit.step.cve-matching", "Matching {count} packages against OSV.dev…", count = packages.len()));
     let agent = agent();
     let hits = match query(&agent, &source.ecosystems, &packages) {
         Ok(hits) => hits,
         Err(error) => {
-            f.add(C, Info, "failed", "The CVE lookup failed").detail(error.clone()).fix("Check this device's internet connection and run the audit again.");
+            f.add(C, Info, "failed", tr!("audit.cve.failed.title", "The CVE lookup failed")).detail(Msg::raw(error.clone())).fix(tr!("audit.cve.failed.fix", "Check this device's internet connection and run the audit again."));
             return (json!({ "status": "failed", "error": error, "ecosystem": ecosystems }), covered);
         }
     };
     const LIMIT: usize = 1500;
     let ids: Vec<String> = hits.iter().flat_map(|(_, ids)| ids.iter().cloned()).collect::<BTreeSet<_>>().into_iter().take(LIMIT).collect();
-    progress(&format!("Reading {} advisories…", ids.len()));
+    progress(&tr!("audit.step.cve-reading", "Reading {count} advisories…", count = ids.len()));
     let known = details(&agent, &ids);
     let manager = manager(d);
     let origin = if source.approximate.is_some() { "osv-approx" } else { "osv" };
-    let note = source.approximate.map_or(String::new(), |base| format!(" Matched with {base} advisories: {pretty} rebuilds it, so versions usually line up, but check before acting."));
+    let note = source.approximate.map_or(Msg::default(), |base| tr!("audit.cve.approximate_note", " Matched with {base} advisories: {pretty} rebuilds it, so versions usually line up, but check before acting.", base = base, pretty = pretty.clone()));
     // Subpackages built from one source (glibc, glibc-common, glibc-langpack-en) share their
     // advisories: one finding for all of them.
     let mut groups: BTreeMap<String, (Vec<&Package>, Vec<Vuln>)> = BTreeMap::new();
@@ -1635,15 +1758,16 @@ fn cves(d: &Data, os: &HashMap<String, String>, f: &mut Findings, progress: &dyn
             .iter()
             .map(|vuln| format!("{:<8} {} — {}{}", vuln.severity.name(), vuln.name, vuln.summary, vuln.fixed.as_deref().map_or(" [no fix yet]".to_owned(), |fixed| format!(" [fixed in {fixed}]"))))
             .collect();
-        let related = if names.len() > 1 { format!(" (+{} related)", names.len() - 1) } else { String::new() };
-        let affected = if names.len() > 1 { format!(" Affects {}.", names.join(", ")) } else { String::new() };
-        f.add(C, worst, &package.name, format!("{} {}{related}: {} known vulnerabilit{}", package.name, package.version, vulns.len(), if vulns.len() == 1 { "y" } else { "ies" }))
+        let related = if names.len() > 1 { tr!("audit.cve.package.related", " (+{count} related)", count = names.len() - 1) } else { Msg::default() };
+        let affected = if names.len() > 1 { tr!("audit.cve.package.affects", " Affects {names}.", names = names.join(", ")) } else { Msg::default() };
+        let worst_note = vulns.first().map_or(Msg::default(), |vuln| tr!("audit.cve.package.worst", " Worst: {name} — {summary}", name = vuln.name.clone(), summary = vuln.summary.clone()));
+        f.add(C, worst, &package.name, tr!("audit.cve.package.title", "{name} {version}{related}: {count} known vulnerabilit{ending}", name = package.name.clone(), version = package.version.clone(), related = related, count = vulns.len(), ending = if vulns.len() == 1 { "y" } else { "ies" }))
             .source(origin)
-            .detail(format!("{fixable} of them have a fixed version.{}{affected}{note}", vulns.first().map_or(String::new(), |vuln| format!(" Worst: {} — {}", vuln.name, vuln.summary))))
+            .detail(tr!("audit.cve.package.detail", "{fixable} of them have a fixed version.{worst}{affected}{note}", fixable = fixable, worst = worst_note, affected = affected, note = note.clone()))
             .evidence(lines.join("\n"))
             .fix(match fixed {
-                Some(fixed) => format!("Upgrade {} to {fixed} or later: {}", names.join(" "), upgrade_command(manager, false)),
-                None => "No fixed version is published yet: limit exposure of what uses it and watch for updates.".to_owned(),
+                Some(fixed) => tr!("audit.cve.package.fix", "Upgrade {names} to {fixed} or later: {command}", names = names.join(" "), fixed = fixed, command = upgrade_command(manager, false)),
+                None => tr!("audit.cve.package.no_fix", "No fixed version is published yet: limit exposure of what uses it and watch for updates."),
             });
     }
     let status = json!({ "status": "done", "ecosystem": ecosystems, "approximate": source.approximate, "packages": packages.len(), "affected": hits.len(), "vulnerabilities": total, "truncated": ids.len() >= LIMIT });
@@ -1684,15 +1808,14 @@ fn vendor(d: &Data, covered: &HashSet<String>, f: &mut Findings) -> usize {
         list.sort_by_key(|(severity, _)| std::cmp::Reverse(*severity));
         total += list.len();
         let worst = list.first().map_or(Medium, |(severity, _)| *severity);
-        f.add(C, worst, &format!("vendor-{name}"), format!("{name}: {} CVE{} fixed by an update not installed yet", list.len(), if list.len() == 1 { "" } else { "s" }))
+        f.add(C, worst, &format!("vendor-{name}"), tr!("audit.cve.vendor.title", "{name}: {count} CVE{plural} fixed by an update not installed yet", name = name.clone(), count = list.len(), plural = if list.len() == 1 { "" } else { "s" }))
             .source("vendor")
-            .detail("From the distribution's own security advisories, read from the server's package cache.")
+            .detail(tr!("audit.cve.vendor.detail", "From the distribution's own security advisories, read from the server's package cache."))
             .evidence(list.iter().map(|(severity, cve)| format!("{:<8} {cve}", severity.name())).collect::<Vec<_>>().join("\n"))
-            .fix(if zypper { "sudo zypper patch --category security".to_owned() } else if fixed.is_empty() { "sudo dnf upgrade --security".to_owned() } else { format!("Upgrade {name} to {fixed}: sudo dnf upgrade --security (yum on older systems)") });
+            .fix(if zypper { Msg::raw("sudo zypper patch --category security") } else if fixed.is_empty() { Msg::raw("sudo dnf upgrade --security") } else { tr!("audit.cve.vendor.fix", "Upgrade {name} to {fixed}: sudo dnf upgrade --security (yum on older systems)", name = name, fixed = fixed) });
     }
     total
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,7 +1893,7 @@ mod tests {
         let covered: HashSet<String> = ["CVE-2024-0003".to_owned()].into();
         assert_eq!(vendor(&d, &covered, &mut f), 2);
         assert_eq!(f.0.len(), 1);
-        assert_eq!((f.0[0].title.as_str(), f.0[0].severity, f.0[0].source), ("openssl-libs: 2 CVEs fixed by an update not installed yet", High, "vendor"));
-        assert!(f.0[0].fix.contains("1:3.0.7-27.el9"));
+        assert_eq!((f.0[0].title.text(), f.0[0].severity, f.0[0].source), ("openssl-libs: 2 CVEs fixed by an update not installed yet", High, "vendor"));
+        assert!(f.0[0].fix.text().contains("1:3.0.7-27.el9"));
     }
 }

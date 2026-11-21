@@ -5,7 +5,7 @@ import { Action, compact, dialogWidth, Hint, IconAction, mono, relativeTime } fr
 import { color, radius } from "../ui/tokens";
 import { openSettingsPage } from "./Settings";
 import { t } from "../i18n";
-import { coreText } from "../i18n/core";
+import { message, type Message } from "../i18n/messages";
 
 const SEVERITIES: AuditSeverity[] = ["critical", "high", "medium", "low", "info"];
 const SEVERITY_LABEL = () => ({ critical: t("Critical"), high: t("High"), medium: t("Medium"), low: t("Low"), info: t("Info") });
@@ -79,15 +79,15 @@ function FindingRow({ finding, report }: { finding: AuditFinding; report: AuditR
         style={{ direction: "row", align: "center", gap: 12, minHeight: 44, padding: { top: 8, bottom: 8, left: 6, right: 6 }, radius: 6, cursor: "pointer", hover: { background: color.hover }, focusVisible: { outlineWidth: 2, outlineColor: color.accent } }}
       >
         <Badge severity={finding.severity} />
-        <Text size={13} weight={550} color={color.text} style={{ flex: 1, minWidth: 0 }}>{coreText(finding.title)}</Text>
+        <Text size={13} weight={550} color={color.text} style={{ flex: 1, minWidth: 0 }}>{message(finding.messages?.title ?? finding.title)}</Text>
         {compact() ? null : <Text size={11.5} color={color.faint} style={{ whiteSpace: "nowrap" }}>{CATEGORY_LABEL()[finding.category] ?? finding.category}</Text>}
         <Glyph name={open ? "x" : "plus"} size={12} color={color.faint} />
       </Pressable>
       {open ? (
         <Column gap={12} style={{ padding: { left: 6, right: 6, bottom: 14, top: 2 } }}>
-          {finding.detail ? <Text size={12.5} color={color.muted} style={{ lineHeight: 1.5 }}>{coreText(finding.detail)}</Text> : null}
+          {finding.detail ? <Text size={12.5} color={color.muted} style={{ lineHeight: 1.5 }}>{message(finding.messages?.detail ?? finding.detail)}</Text> : null}
           {finding.evidence ? <Block label={t("Evidence")} text={finding.evidence} /> : null}
-          {finding.fix ? <Block label={t("How to fix")} text={coreText(finding.fix)} copy /> : null}
+          {finding.fix ? <Block label={t("How to fix")} text={message(finding.messages?.fix ?? finding.fix)} copy /> : null}
           <Text size={11} color={color.faint}>{t("Source: {source} · {hint}", { source: sourceLabel(finding, report), hint: SEVERITY_HINT()[finding.severity] })}</Text>
         </Column>
       ) : null}
@@ -108,10 +108,10 @@ function markdown(name: string, report: AuditReport): string {
     "",
   ];
   for (const finding of report.findings) {
-    lines.push(`## [${SEVERITY_LABEL()[finding.severity]}] ${coreText(finding.title)}`, "", `${t("Category")}: ${CATEGORY_LABEL()[finding.category] ?? finding.category} · ${t("Source")}: ${sourceLabel(finding, report)}`, "");
-    if (finding.detail) lines.push(coreText(finding.detail), "");
+    lines.push(`## [${SEVERITY_LABEL()[finding.severity]}] ${message(finding.messages?.title ?? finding.title)}`, "", `${t("Category")}: ${CATEGORY_LABEL()[finding.category] ?? finding.category} · ${t("Source")}: ${sourceLabel(finding, report)}`, "");
+    if (finding.detail) lines.push(message(finding.messages?.detail ?? finding.detail), "");
     if (finding.evidence) lines.push("```", finding.evidence, "```", "");
-    if (finding.fix) lines.push(`**${t("Fix")}:** ${coreText(finding.fix)}`, "");
+    if (finding.fix) lines.push(`**${t("Fix")}:** ${message(finding.messages?.fix ?? finding.fix)}`, "");
   }
   return lines.join("\n");
 }
@@ -174,19 +174,27 @@ function Summary({ report }: { report: AuditReport }) {
 }
 
 /** The step the core reports, in the UI language: "Checking ssh…" names the category as Settings does. */
-function stepText(step: string): string {
-  if (step === "Starting…") return t("Starting…");
-  const category = /^Checking (\w+)…$/.exec(step)?.[1];
-  const label = category ? CATEGORY_LABEL()[category] : undefined;
-  return label ? t("Checking {what}…", { what: label }) : coreText(step);
+function stepText(step: Message): string {
+  const category = step.key === "audit.step.checking" ? step.args?.category : undefined;
+  const label = typeof category === "string" ? CATEGORY_LABEL()[category] : undefined;
+  return label ? t("Checking {what}…", { what: label }) : message(step);
 }
 
-/** The phases of a run, from the step the core reports. */
-function phase(step: string): number {
-  if (/^(Starting|Connecting)/.test(step)) return 0;
-  if (/^(Reading the system|Checking)/.test(step)) return 1;
-  if (/^(Trying|Analysing)/.test(step)) return 2;
-  return 3;
+/** The phases of a run, from the id of the step the core reports. */
+function phase(step: Message): number {
+  switch (step.key) {
+    case "audit.step.reading":
+    case "audit.step.checking":
+      return 1;
+    case "audit.step.probing":
+    case "audit.step.analysing":
+      return 2;
+    case "audit.step.cve-matching":
+    case "audit.step.cve-reading":
+      return 3;
+    default:
+      return 0;
+  }
 }
 
 function Progress({ run }: { run: AuditRun }) {
@@ -210,7 +218,7 @@ function Progress({ run }: { run: AuditRun }) {
             </Row>
             <Column gap={1} style={{ flex: 1, minWidth: 0 }}>
               <Text size={13} weight={active ? 650 : 500} color={done || active ? color.text : color.muted}>{step.label}</Text>
-              <Text size={11.5} color={color.faint}>{active && run.step ? stepText(run.step) : step.detail}</Text>
+              <Text size={11.5} color={color.faint}>{active && run.step.text ? stepText(run.step) : step.detail}</Text>
             </Column>
           </Row>
         );
@@ -338,7 +346,7 @@ export function Audit() {
             {run?.state === "error" ? (
               <Row gap={10} align="center" style={{ padding: 12, radius: 8, background: color.dangerSoft }}>
                 <Glyph name="alert" size={14} color={color.danger} />
-                <Text size={12.5} color={color.danger} style={{ flex: 1 }}>{t("The audit failed: {step}", { step: coreText(run.step) })}</Text>
+                <Text size={12.5} color={color.danger} style={{ flex: 1 }}>{t("The audit failed: {step}", { step: message(run.step) })}</Text>
               </Row>
             ) : null}
             {running ? <Progress run={run} /> : null}
