@@ -24,13 +24,13 @@ let quick = "";
 export const quickBar = { shown: false };
 let hovered: string | undefined;
 
-function address(host: HostData): string {
+export function address(host: HostData): string {
   const user = host.user ? `${host.user}@` : "";
   const port = host.port && host.port !== 22 ? `:${host.port}` : "";
   return `${user}${host.address}${port}`;
 }
 
-function matches(host: VaultRecord<HostData>, query: string): boolean {
+export function matches(host: VaultRecord<HostData>, query: string): boolean {
   if (!query) return true;
   const haystack = `${host.data.name} ${host.data.address} ${host.data.user ?? ""} ${host.data.group ?? ""}`.toLowerCase();
   return query.toLowerCase().split(/\s+/).every(word => haystack.includes(word));

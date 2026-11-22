@@ -1,8 +1,8 @@
 import { Column, Modal, Pressable, Row, Scroll, Select, Text, viewport } from "@tarve/core";
 import { applyUpdate, canSelfUpdate, checkUpdates, openPage, releasePage, updates, updatesConfigured, version } from "../state/updates";
-import { AUDIT_CATEGORIES, auditCategoryOn, saveAppearance, saveAuditSettings, setFingerprint, ui, type Appearance } from "../state/store";
+import { AUDIT_CATEGORIES, auditCategoryOn, defaultDownloadFolder, dialogs, saveAppearance, saveAuditSettings, saveTransferSettings, setFingerprint, ui, type Appearance } from "../state/store";
 import { Glyph, type IconId } from "../ui/icons";
-import { Action, ANDROID, compact, dialogWidth, IconAction, relativeTime, Segments, WINDOWS } from "../ui/kit";
+import { Action, ANDROID, compact, dialogWidth, IconAction, mono, relativeTime, Segments, TextField, WINDOWS } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 import { t, type LanguageChoice } from "../i18n";
 
@@ -30,7 +30,7 @@ const SHELLS = () => [
   { value: "wsl.exe", label: "WSL" },
 ];
 
-type Page = "appearance" | "terminal" | "security" | "about";
+type Page = "appearance" | "terminal" | "transfers" | "security" | "about";
 let page: Page = "appearance";
 
 /** Opens Settings on a page (the UI check uses it). */
@@ -42,6 +42,8 @@ export function openSettingsPage(next: Page): void {
 const PAGES = (): { value: Page; label: string; icon: IconId }[] => [
   { value: "appearance", label: t("Appearance"), icon: "settings" },
   { value: "terminal", label: t("Terminal"), icon: "terminal" },
+  // Android saves through the system and has no editors to hand a file to.
+  ...(ANDROID ? [] : [{ value: "transfers" as const, label: t("Transfers"), icon: "folder" as const }]),
   { value: "security", label: t("Security"), icon: "shield" },
   { value: "about", label: t("About"), icon: "download" },
 ];
@@ -176,6 +178,40 @@ function Security() {
   );
 }
 
+async function chooseDownloadFolder(): Promise<void> {
+  const folder = await dialogs.folder(t("Download folder"));
+  if (folder) saveTransferSettings({ folder });
+}
+
+async function chooseEditor(): Promise<void> {
+  const editor = await dialogs.pick(t("Choose the editor"), WINDOWS ? [{ name: t("Programs"), extensions: ["exe", "cmd", "bat"] }] : []);
+  if (editor) saveTransferSettings({ editor });
+}
+
+/** Downloads: a save dialog each time or straight into a folder; and the editor remote files open in. */
+function TransferSettingsPage() {
+  const settings = ui.transferSettings;
+  return (
+    <Column>
+      <Setting label={t("When downloading")} hint={t("Ask where to save each file, or save it straight into the download folder.")}>
+        <Segments value={settings.download} options={[{ value: "ask", label: t("Always ask") }, { value: "folder", label: t("Save to the folder") }] as const} onChange={download => saveTransferSettings({ download })} />
+      </Setting>
+      <Setting label={t("Download folder")} hint={t("Empty: your Downloads folder. A file never overwrites another: a number is added to its name.")} stacked>
+        <Row gap={8} align="center">
+          <TextField id="download-folder" value={settings.folder} placeholder={defaultDownloadFolder()} onChange={folder => saveTransferSettings({ folder }, true)} style={{ flex: 1, ...mono, fontSize: 12.5 }} />
+          <Action icon="folder" label={t("Choose…")} onClick={() => { void chooseDownloadFolder(); }} />
+        </Row>
+      </Setting>
+      <Setting label={t("Default editor")} hint={t("Opens remote files picked with Open in the editor: the program's path, optionally with arguments. Empty: the system's app for the file type.")} stacked>
+        <Row gap={8} align="center">
+          <TextField id="default-editor" value={settings.editor} placeholder={t("System app")} onChange={editor => saveTransferSettings({ editor }, true)} style={{ flex: 1, ...mono, fontSize: 12.5 }} />
+          <Action icon="file" label={t("Choose…")} onClick={() => { void chooseEditor(); }} />
+        </Row>
+      </Setting>
+    </Column>
+  );
+}
+
 function About() {
   const busy = updates.state === "checking" || updates.state === "downloading";
   const install = canSelfUpdate() ? t("Install and restart") : ANDROID ? t("Download APK") : t("Open download page");
@@ -249,6 +285,8 @@ export function Settings() {
                 <About />
                 ) : page === "security" ? (
                 <Security />
+                ) : page === "transfers" ? (
+                <TransferSettingsPage />
                 ) : (
                   <Column>
                   <Setting label={t("Cursor")}>

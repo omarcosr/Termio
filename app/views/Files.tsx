@@ -1,7 +1,7 @@
 import { Column, Pressable, Row, Scroll, Text } from "@tarve/core";
-import { browse, dialogs, refresh, download, joinPath, makeDirectory, removeEntry, renameEntry, ui, upload, type FilesInfo, type RemoteEntry, type Transfer } from "../state/store";
+import { browse, dialogs, editRemote, refresh, joinPath, makeDirectory, openLocalFile, removeEntry, renameEntry, saveDownload, ui, upload, uploadEdited, type FilesInfo, type RemoteEntry, type Transfer } from "../state/store";
 import { Glyph } from "../ui/icons";
-import { compact, Action, IconAction, TextField, mono } from "../ui/kit";
+import { compact, Action, ANDROID, IconAction, TextField, mono } from "../ui/kit";
 import { color, radius } from "../ui/tokens";
 import { locale, t } from "../i18n";
 
@@ -30,11 +30,6 @@ function when(seconds: number): string {
   const date = new Date(seconds * 1000);
   const sameYear = date.getFullYear() === new Date().getFullYear();
   return date.toLocaleDateString(locale(), sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" }) + (sameYear ? ` ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}` : "");
-}
-
-async function pickDownload(files: FilesInfo, entry: RemoteEntry) {
-  const local = await dialogs.save(entry.name);
-  if (local) download(files, entry, local);
 }
 
 async function pickUpload(files: FilesInfo) {
@@ -119,7 +114,7 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
   const state = draft(files);
   const selected = state.selected === entry.name;
   const renaming = state.renaming?.entry === entry.name ? state.renaming : undefined;
-  const open = () => entry.directory ? browse(files, joinPath(files.path, entry.name)) : pickDownload(files, entry);
+  const open = () => entry.directory ? browse(files, joinPath(files.path, entry.name)) : saveDownload(files, entry);
   return (
     <Pressable
       key={entry.name}
@@ -146,8 +141,10 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
       {compact() && selected ? null : <Text size={12} color={color.faint} style={{ ...mono, width: 80, shrink: 0, textAlign: "end" }}>{entry.directory ? "" : size(entry.size)}</Text>}
       {compact() ? null : <Text size={12} color={color.faint} style={{ width: 130, textAlign: "end" }}>{when(entry.modified)}</Text>}
       {/* A phone shows the actions of the selected row only, where the size column was. */}
-      <Row gap={2} style={compact() ? { display: selected ? "flex" : "none", shrink: 0 } : { width: 96, justify: "end", opacity: selected ? 1 : 0.0 }}>
-        {entry.directory ? null : <IconAction icon="download" label={t("Download {name}", { name: entry.name })} onClick={() => pickDownload(files, entry)} />}
+      <Row gap={2} style={compact() ? { display: selected ? "flex" : "none", shrink: 0 } : { width: ACTIONS_WIDTH, justify: "end", opacity: selected ? 1 : 0.0 }}>
+        {entry.directory ? null : <IconAction icon="download" label={t("Download {name}", { name: entry.name })} onClick={() => saveDownload(files, entry)} />}
+        {/* Android has no editors to hand a file to. */}
+        {entry.directory || ANDROID ? null : <IconAction icon="code" label={t("Open {name} in the editor", { name: entry.name })} onClick={() => editRemote(files, entry)} />}
         <IconAction icon="pencil" label={t("Rename {name}", { name: entry.name })} onClick={() => { state.renaming = { entry: entry.name, name: entry.name }; }} />
         <IconAction icon="trash" label={t("Delete {name}", { name: entry.name })} onClick={() => removeEntry(files, entry)} />
       </Row>
@@ -155,7 +152,10 @@ function EntryRow({ files, entry }: { files: FilesInfo; entry: RemoteEntry }) {
   );
 }
 
-function TransferRow({ transfer }: { transfer: Transfer }) {
+/** The row's action buttons: download, edit, rename, delete (edit not on Android). */
+const ACTIONS_WIDTH = ANDROID ? 96 : 128;
+
+function TransferRow({ files, transfer }: { files: FilesInfo; transfer: Transfer }) {
   const fraction = transfer.total ? Math.min(1, transfer.done / transfer.total) : transfer.state === "done" ? 1 : 0;
   const tone = transfer.state === "error" ? color.danger : transfer.state === "done" ? color.ok : color.accent;
   return (
@@ -163,6 +163,13 @@ function TransferRow({ transfer }: { transfer: Transfer }) {
       <Row gap={8} align="center">
         <Glyph name={transfer.direction === "up" ? "upload" : "download"} size={13} color={tone} />
         <Text size={12.5} color={color.text} style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{transfer.name}</Text>
+        {/* A file downloaded to edit: open it again, or send the edited copy back over the original. */}
+        {transfer.edit && transfer.state === "done" ? (
+          <Row gap={2} style={{ shrink: 0 }}>
+            <IconAction icon="code" size={13} label={t("Open {name} in the editor", { name: transfer.name })} onClick={() => openLocalFile(transfer.edit!.local)} />
+            <IconAction icon="upload" size={13} color={color.accent} label={t("Upload the edited {name}", { name: transfer.name })} onClick={() => uploadEdited(files, transfer)} />
+          </Row>
+        ) : null}
       </Row>
       <Text size={11.5} color={color.faint} style={{ ...mono, whiteSpace: "nowrap" }}>{transfer.state === "error" ? "failed" : transfer.total ? `${size(transfer.done)} / ${size(transfer.total)}` : size(transfer.done)}</Text>
       <Row style={{ height: 3, radius: 2, background: color.line }}>
@@ -209,7 +216,7 @@ export function Files({ files }: { files: FilesInfo }) {
             <IconAction icon="x" label={t("Cancel")} onClick={() => { state.newFolder = undefined; }} />
           </Row>
         ) : null}
-        <Row gap={12} style={{ padding: { left: 30, right: narrow ? 14 : 108, top: 10, bottom: 6 } }}>
+        <Row gap={12} style={{ padding: { left: 30, right: narrow ? 14 : ACTIONS_WIDTH + 12, top: 10, bottom: 6 } }}>
           <Text size={11.5} weight={650} color={color.faint} style={{ flex: 1 }}>{t("Name")}</Text>
           <Text size={11.5} weight={650} color={color.faint} style={{ width: 80, textAlign: "end" }}>{t("Size")}</Text>
           {narrow ? null : <Text size={11.5} weight={650} color={color.faint} style={{ width: 130, textAlign: "end" }}>{t("Modified")}</Text>}
@@ -236,7 +243,7 @@ function Transfers({ files, narrow }: { files: FilesInfo; narrow: boolean }) {
       : { width: 280, shrink: 1, minWidth: 200, overflow: "hidden", padding: 16, background: color.panel, borderColor: color.line, borderWidth: { left: 1 } }}>
       <Text size={13} weight={650} color={color.text}>{t("Transfers")}</Text>
       <Scroll flex={1}>
-        <Column>{files.transfers.map(transfer => <TransferRow key={transfer.request} transfer={transfer} />)}</Column>
+        <Column>{files.transfers.map(transfer => <TransferRow key={transfer.request} files={files} transfer={transfer} />)}</Column>
       </Scroll>
     </Column>
   );

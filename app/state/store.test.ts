@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { dropOnNewTab, dropOnPane, dropOnTab, joinPath, parseQuickConnect, shortTitle, startDrag, ui } from "./store";
+import { join } from "node:path";
+import { dropOnNewTab, dropOnPane, dropOnTab, editorLaunch, fileUri, freePath, joinPath, localName, parseQuickConnect, shortTitle, startDrag, ui } from "./store";
 import { size } from "../views/Files";
 
 describe("quick connect", () => {
@@ -59,6 +60,33 @@ describe("remote paths", () => {
     expect(joinPath("/home/ops", "..")).toBe("/home");
     expect(joinPath("/home", "..")).toBe("/");
     expect(joinPath("/", "..")).toBe("/");
+  });
+});
+
+describe("downloads and the editor", () => {
+  test("a download never overwrites a file and gets a name the disk accepts", () => {
+    const taken = new Set([join("/dl", "report.txt"), join("/dl", "report (2).txt"), join("/dl", "Makefile")]);
+    expect(freePath("/dl", "report.txt", path => taken.has(path))).toBe(join("/dl", "report (3).txt"));
+    expect(freePath("/dl", "Makefile", path => taken.has(path))).toBe(join("/dl", "Makefile (2)"));
+    expect(freePath("/dl", "new.log", path => taken.has(path))).toBe(join("/dl", "new.log"));
+    expect(localName('a:b*c?.txt')).toBe("a_b_c_.txt");
+    expect(localName("trailing. ")).toBe("trailing");
+    expect(localName("..")).toBe("download");
+  });
+
+  test("the editor runs with the file; empty falls back to the system's opener", () => {
+    const none = () => false;
+    expect(editorLaunch("", "C:\\t\\a.txt", "win32", none)).toEqual({ command: "explorer.exe", args: ["C:\\t\\a.txt"] });
+    expect(editorLaunch("", "/t/a.txt", "linux", none)).toEqual({ command: "xdg-open", args: ["/t/a.txt"] });
+    expect(editorLaunch("", "/t/a.txt", "android", none)).toBeUndefined();
+    expect(editorLaunch('"C:\\Program Files\\Notepad++\\notepad++.exe" -multiInst', "a.txt", "win32", none)).toEqual({ command: "C:\\Program Files\\Notepad++\\notepad++.exe", args: ["-multiInst", "a.txt"] });
+    expect(editorLaunch("C:\\Program Files\\Sublime\\subl.exe", "a.txt", "win32", path => path.endsWith("subl.exe"))).toEqual({ command: "C:\\Program Files\\Sublime\\subl.exe", args: ["a.txt"] });
+    expect(editorLaunch("code --wait", "/t/a.txt", "linux", none)).toEqual({ command: "code", args: ["--wait", "/t/a.txt"] });
+  });
+
+  test("local paths become file URIs", () => {
+    expect(fileUri("C:\\Users\\me\\a b#1.txt")).toBe("file:///C:/Users/me/a%20b%231.txt");
+    expect(fileUri("/tmp/x.txt")).toBe("file:///tmp/x.txt");
   });
 });
 

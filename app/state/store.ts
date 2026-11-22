@@ -7,6 +7,10 @@ import { setPalette } from "../ui/tokens";
 import { plural, setLanguage, t, type Key, type LanguageChoice } from "../i18n";
 import type { Message } from "../i18n/messages";
 import { keepAlive, openExternal, secureStore, toast as showToast, type KeepAlive, clipboard, store } from "@tarve/core";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface VaultRecord<T = Record<string, unknown>> {
   id: string;
@@ -88,6 +92,8 @@ export interface Transfer {
   done: number;
   state: "running" | "done" | "error";
   message?: string;
+  /** A file downloaded to edit: its local copy and where it came from, to send it back. */
+  edit?: { local: string; remote: string };
 }
 
 /** A file browser on one host, over its own SFTP connection. */
@@ -193,6 +199,8 @@ export const ui = store({
   paletteQuery: "",
   /** Android: the vault password is sealed here and a fingerprint unlocks it. */
   fingerprint: false,
+  /** Where downloads go and what opens a file to edit. */
+  transferSettings: { download: "ask", folder: "", editor: "" } as TransferSettings,
 });
 
 /** Native file pickers, provided by the app handle once the window is up. */
@@ -201,6 +209,8 @@ export const dialogs = {
   save: async (_name: string): Promise<string | undefined> => undefined,
   /** One file to read, e.g. another program's export. */
   pick: async (_title: string, _filters: { name: string; extensions: string[] }[]): Promise<string | undefined> => undefined,
+  /** One folder, e.g. where downloads go. */
+  folder: async (_title: string): Promise<string | undefined> => undefined,
   /** Moves the keyboard focus to a node by id (on Android a text field brings up the soft keyboard). */
   focus: (_id: string): void => {},
 };
@@ -434,6 +444,7 @@ export function reload(): void {
   ui.known = list<KnownHostData>("known_host");
   ui.snippets = list<SnippetData>("snippet");
   loadAudit(list);
+  loadTransferSettings(list);
   const targets = core().call<Record<SyncProvider, VaultRecord<SyncSettings> | null>>({ op: "sync.settings" });
   ui.syncTargets = {};
   for (const provider of ["r2", "s3"] as const) {
@@ -918,31 +929,179 @@ export async function browse(files: FilesInfo, path: string): Promise<void> {
   }
 }
 
-async function transfer(files: FilesInfo, direction: "up" | "down", name: string, args: Record<string, unknown>, total?: number): Promise<void> {
+/** Runs one transfer and lists it in the panel; true once the file arrived. */
+async function transfer(files: FilesInfo, direction: "up" | "down", name: string, args: Record<string, unknown>, total?: number, edit?: Transfer["edit"]): Promise<boolean> {
   const request = nextRequest;
-  const entry: Transfer = { request, name, direction, total, done: 0, state: "running" };
+  const entry: Transfer = { request, name, direction, total, done: 0, state: "running", edit };
   files.transfers.unshift(entry);
   render();
+  let ok = false;
   try {
     const result = await sftpRequest<{ bytes: number }>(direction === "up" ? "sftp.upload" : "sftp.download", { id: files.id, ...args });
     entry.done = result.bytes;
     entry.total = result.bytes;
     entry.state = "done";
+    ok = true;
     if (direction === "up") await browse(files, files.path);
   } catch (error) {
     entry.state = "error";
     entry.message = message(error);
   }
   render();
+  return ok;
 }
 
-export function download(files: FilesInfo, entry: RemoteEntry, local: string): void {
-  void transfer(files, "down", entry.name, { remote: joinPath(files.path, entry.name), local }, entry.size);
+export function download(files: FilesInfo, entry: RemoteEntry, local: string): Promise<boolean> {
+  return transfer(files, "down", entry.name, { remote: joinPath(files.path, entry.name), local }, entry.size);
 }
 
-export function upload(files: FilesInfo, local: string): void {
+/** Sends a local file into the folder shown, or over `remote` when given. */
+export function upload(files: FilesInfo, local: string, remote?: string): void {
   const name = local.split(/[\\/]/).pop()!;
-  void transfer(files, "up", name, { local, remote: joinPath(files.path, name) });
+  void transfer(files, "up", name, { local, remote: remote ?? joinPath(files.path, name) });
+}
+
+// --- Downloads and editing -------------------------------------------------------------------
+
+/** Where a download goes and what opens a file to edit. Saved per vault, like the other settings. */
+export interface TransferSettings {
+  /** `ask`: a save dialog for each file; `folder`: straight into `folder`. */
+  download: "ask" | "folder";
+  /** The download folder; empty for the user's Downloads. */
+  folder: string;
+  /** The program that opens a file to edit (path, optionally with arguments); empty for the system's app. */
+  editor: string;
+}
+
+const DEFAULT_TRANSFERS: TransferSettings = { download: "ask", folder: "", editor: "" };
+
+function loadTransferSettings(list: <T>(kind: string) => VaultRecord<T>[]): void {
+  const saved = list<Partial<TransferSettings>>("settings").find(record => record.id === "transfers")?.data;
+  ui.transferSettings = { ...DEFAULT_TRANSFERS, ...saved };
+}
+
+let transfersSave: ReturnType<typeof setTimeout> | undefined;
+
+/** Changes the transfer settings at once; typing in a field saves once it pauses (`later`). */
+export function saveTransferSettings(change: Partial<TransferSettings>, later = false): void {
+  ui.transferSettings = { ...ui.transferSettings, ...change };
+  clearTimeout(transfersSave);
+  const save = () => { attempt(() => core().call({ op: "records.put", kind: "settings", id: "transfers", data: ui.transferSettings })); };
+  if (later) transfersSave = setTimeout(save, 600);
+  else save();
+}
+
+/** The user's Downloads folder. */
+export function defaultDownloadFolder(): string {
+  return join(homedir(), "Downloads");
+}
+
+export function downloadFolder(): string {
+  return ui.transferSettings.folder.trim() || defaultDownloadFolder();
+}
+
+/** A remote name made safe for a local disk: Windows refuses <>:"/\|?* and a trailing dot or space. */
+export function localName(name: string): string {
+  return name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/, "") || "download";
+}
+
+/** `name` in `folder`, or `name (2).ext`, `name (3).ext`… when it is taken: a download never overwrites. */
+export function freePath(folder: string, name: string, taken: (path: string) => boolean = existsSync): string {
+  const safe = localName(name);
+  const dot = safe.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [safe.slice(0, dot), safe.slice(dot)] : [safe, ""];
+  let path = join(folder, safe);
+  for (let n = 2; taken(path); n++) path = join(folder, `${stem} (${n})${ext}`);
+  return path;
+}
+
+/** Downloads a file as the settings say: into the download folder, or where the save dialog points. */
+export async function saveDownload(files: FilesInfo, entry: RemoteEntry): Promise<void> {
+  if (ui.transferSettings.download === "folder") {
+    const folder = downloadFolder();
+    try {
+      mkdirSync(folder, { recursive: true });
+      const local = freePath(folder, entry.name);
+      if (await download(files, entry, local)) toast(t("Saved to {path}", { path: local }));
+      return;
+    } catch (error) {
+      // A folder that cannot be made (another device's path, no permission): ask instead.
+      toast(t("Could not use the download folder: {error}", { error: message(error) }), "error");
+    }
+  }
+  const local = await dialogs.save(entry.name);
+  if (local) void download(files, entry, local);
+}
+
+/** Splits a command line into words; quotes keep a path with spaces in one piece. */
+export function splitCommand(text: string): string[] {
+  return [...text.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(match => match[1] ?? match[2] ?? match[3]!);
+}
+
+/**
+ * The program and arguments that open `path`: the editor from Settings (a bare path, or a command
+ * line the file is appended to), else the system's opener. None on Android.
+ */
+export function editorLaunch(editor: string, path: string, platform: string = process.platform, exists: (path: string) => boolean = existsSync): { command: string; args: string[] } | undefined {
+  const typed = editor.trim();
+  if (typed && exists(typed)) return { command: typed, args: [path] };
+  const words = splitCommand(typed);
+  if (words.length) return { command: words[0]!, args: [...words.slice(1), path] };
+  if (platform === "win32") return { command: "explorer.exe", args: [path] };
+  if (platform === "darwin") return { command: "open", args: [path] };
+  if (platform === "android") return undefined;
+  return { command: "xdg-open", args: [path] };
+}
+
+/** An absolute local path as a file: URI. */
+export function fileUri(path: string): string {
+  const slashed = path.replace(/\\/g, "/");
+  return `file://${slashed.startsWith("/") ? "" : "/"}${encodeURI(slashed).replace(/#/g, "%23").replace(/\?/g, "%3F")}`;
+}
+
+/** Opens a local file in the editor from Settings, or in the app the system has for its type. */
+export function openLocalFile(path: string): void {
+  const name = path.split(/[\\/]/).pop()!;
+  const fail = (error: unknown) => toast(t("Could not open {name}: {error}", { name, error: message(error) }), "error");
+  if (!ui.transferSettings.editor.trim()) {
+    try {
+      openExternal(fileUri(path));
+      return;
+    } catch {
+      // The system's handler refused the URI: run its opener below.
+    }
+  }
+  const plan = editorLaunch(ui.transferSettings.editor, path);
+  if (!plan) return;
+  try {
+    const child = spawn(plan.command, plan.args, { detached: true, stdio: "ignore" });
+    child.on("error", fail);
+    child.unref();
+  } catch (error) {
+    fail(error);
+  }
+}
+
+/**
+ * Downloads a remote file into a fresh temporary folder and opens it to edit. Its row in the
+ * transfers panel then offers to send the edited copy back. No file watching: the runtime has no
+ * change events, and polling the file would be the only way.
+ */
+export async function editRemote(files: FilesInfo, entry: RemoteEntry): Promise<void> {
+  if (ANDROID) return;
+  let local: string;
+  try {
+    local = join(mkdtempSync(join(tmpdir(), "termio-edit-")), localName(entry.name));
+  } catch (error) {
+    return toast(message(error), "error");
+  }
+  const remote = joinPath(files.path, entry.name);
+  if (await transfer(files, "down", entry.name, { remote, local }, entry.size, { local, remote })) openLocalFile(local);
+}
+
+/** Sends the edited copy of a file back over the original. */
+export function uploadEdited(files: FilesInfo, item: Transfer): void {
+  if (item.edit) upload(files, item.edit.local, item.edit.remote);
 }
 
 export async function makeDirectory(files: FilesInfo, name: string): Promise<void> {

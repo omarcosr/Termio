@@ -24,7 +24,7 @@ import {
   split,
   ui, biometrics, closeTermSearch, openTermSearch, setTermQuery, stepTermSearch, reportFault } from "./state/store";
 import { color, font, isLight } from "./ui/tokens";
-import { handleBack, Root } from "./views/Shell";
+import { handleBack, middleClickTab, Root } from "./views/Shell";
 import { cancelPath } from "./views/Files";
 import { forwardPointer, imeKey, sessionOfIme, sessionOfNode, touchPointer } from "./views/TerminalPane";
 import { touch } from "./ui/kit";
@@ -63,6 +63,7 @@ app.onBack(() => {
 });
 dialogs.open = async () => (await app.openFilesDialog({ title: t("Upload files") })) ?? [];
 dialogs.save = async name => (await app.saveFileDialog({ title: t("Save as"), fileName: name })) ?? undefined;
+dialogs.folder = async title => (await app.openFolderDialog({ title })) ?? undefined;
 dialogs.focus = id => app.focus(id);
 biometrics.authenticate = async reason => {
   const result = await authenticate({ reason });
@@ -210,6 +211,7 @@ app.onEvent(event => {
     const free = event.id === null || typeof ui.active === "number" || sessionOfNode(event.id) !== undefined;
     if (session !== undefined && free && !ui.paletteOpen && ui.prompts.length === 0) core().key(session, event);
   } else if (event.type === "pointer") {
+    if (middleClickTab(event)) return;
     const target = sessionOfNode(event.id);
     if (target !== undefined) {
       // Clicking into a pane of a split gives it the keyboard.

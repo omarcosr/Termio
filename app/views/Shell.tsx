@@ -1,4 +1,4 @@
-import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem, clipboard, viewport } from "@tarve/core";
+import { Column, CommandPalette, Modal, Pressable, Row, Scroll, Text, TitleBar, type CommandItem, clipboard, viewport, Flyout } from "@tarve/core";
 import {
   activate,
   closePane,
@@ -33,11 +33,11 @@ import {
   dismissFault, refresh, saveAppearance } from "../state/store";
 import type { DragEndEvent } from "@tarve/core";
 import { Glyph, type IconId } from "../ui/icons";
-import { ANDROID, touch, Action, compact, dialogWidth, IconAction, mono, TextField } from "../ui/kit";
-import { color, font, radius } from "../ui/tokens";
+import { ANDROID, touch, Action, compact, dialogWidth, IconAction, mono, TextField, Hint, Label } from "../ui/kit";
+import { color, font, radius, labels } from "../ui/tokens";
 import { cancelPath, Files } from "./Files";
 import { HostKeyPrompt } from "./HostKeyPrompt";
-import { closeImport, Hosts, QuickConnect, quickBar } from "./Hosts";
+import { closeImport, Hosts, QuickConnect, quickBar, address as hostAddress, matches as hostMatches } from "./Hosts";
 import { closeNewKey, Keychain, KnownHosts } from "./Keychain";
 import { Snippets } from "./Snippets";
 import { Sync } from "./Sync";
@@ -64,6 +64,36 @@ function tabTone(tab: Tab): string {
   return statusTone[worst ?? "connected"];
 }
 
+/** The node ids of a tab button and of its parts: the raw pointer event names the deepest one. */
+const tabNodeId = (tab: number, part?: string) => part ? `tab-${tab}-${part}` : `tab-${tab}`;
+
+function tabOfNode(id: string | null): number | undefined {
+  const match = id ? /^tab-(\d+)(?:-(?:mark|title))?$/.exec(id) : null;
+  return match ? Number(match[1]) : undefined;
+}
+
+/** The tab a middle button went down on: it closes when the button comes up over the same tab. */
+let middlePressed: number | undefined;
+
+/**
+ * Middle click on a tab closes it, as in browsers. Pressable reports only the primary button
+ * (onClick), so this reads the app's raw `pointer` events (`pointerEvents: true` in main.tsx).
+ * True when the event was a middle press or release over a tab.
+ */
+export function middleClickTab(event: { phase: "down" | "up" | "wheel"; id: string | null; button?: number }): boolean {
+  if (event.button !== 1 || event.phase === "wheel") return false;
+  const tab = tabOfNode(event.id);
+  if (event.phase === "down") {
+    middlePressed = tab;
+    return tab !== undefined;
+  }
+  const pressed = middlePressed;
+  middlePressed = undefined;
+  if (tab === undefined || tab !== pressed) return false;
+  if (ui.tabs.some(item => item.id === tab)) closeTab(tab);
+  return true;
+}
+
 function TabButton({ tab }: { tab: Tab }) {
   const active = ui.active === tab.id;
   const title = tabTitle(tab);
@@ -72,10 +102,12 @@ function TabButton({ tab }: { tab: Tab }) {
   return (
     <Pressable
       key={tab.id}
+      id={tabNodeId(tab.id)}
       focusable={false}
-      onClick={() => activate(tab.id)}
+      // A middle press closes the tab: it neither selects it nor drags it, and a closed tab is not activated.
+      onClick={() => { if (middlePressed !== tab.id && ui.tabs.some(item => item.id === tab.id)) activate(tab.id); }}
       draggable
-      onDragStart={() => startDrag({ kind: "tab", id: tab.id })}
+      onDragStart={() => { if (middlePressed !== tab.id) startDrag({ kind: "tab", id: tab.id }); }}
       onDragEnd={finishDrag}
       onDragEnter={() => hoverDrop(`tab:${tab.id}`)}
       onDragLeave={() => { if (ui.dropZone === `tab:${tab.id}`) hoverDrop(undefined); }}
@@ -98,8 +130,10 @@ function TabButton({ tab }: { tab: Tab }) {
         hover: { background: active ? color.raised : color.hover },
       }}
     >
-      {tab.kind === "files" ? <Glyph name="folder" size={13} color={active ? color.accent : color.muted} /> : <Row style={{ width: 6, height: 6, radius: 3, background: tabTone(tab) }} />}
-      <Text size={12.5} weight={active ? 600 : 500} color={active ? color.text : color.muted} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{title}</Text>
+      <Row id={tabNodeId(tab.id, "mark")} style={{ align: "center", justify: "center", shrink: 0, pointerEvents: "none" }}>
+        {tab.kind === "files" ? <Glyph name="folder" size={13} color={active ? color.accent : color.muted} /> : <Row style={{ width: 6, height: 6, radius: 3, background: tabTone(tab) }} />}
+      </Row>
+      <Text id={tabNodeId(tab.id, "title")} size={12.5} weight={active ? 600 : 500} color={active ? color.text : color.muted} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1, minWidth: 0 }}>{title}</Text>
       <IconAction icon="x" size={22} label={t("Close {title}", { title })} focusable={false} onClick={() => closeTab(tab.id)} />
     </Pressable>
   );
@@ -139,7 +173,7 @@ function Tabs() {
   const strip = [
     ui.tabs.length ? <Row key="sep" style={{ width: 1, height: 16, shrink: 0, background: color.line, margin: { left: 4, right: 4 } }} /> : null,
     ...ui.tabs.map(tab => <TabButton key={tab.id} tab={tab} />),
-    <IconAction key="new" icon="plus" label={t("New local terminal")} focusable={false} onClick={openLocal} />,
+    <NewTabMenu key="new" id="new-tab-menu" />,
     ui.drag ? <NewTabZone key="zone" /> : null,
   ];
   return (
@@ -160,7 +194,7 @@ function Tabs() {
         // A phone shows one tab: the open one, with how many there are. A tap lists them all.
         <Row gap={4} align="center" flex={1} style={{ minWidth: 0, padding: { right: 4 } }}>
           {ui.tabs.length ? <TabSwitch /> : <Row flex={1} />}
-          <IconAction icon="plus" label={t("New local terminal")} focusable={false} onClick={openLocal} />
+          <NewTabMenu id="new-tab-menu-compact" />
         </Row>
       ) : (
         <Row gap={4} align="center" flex={1} style={{ minWidth: 0 }}>
@@ -179,6 +213,119 @@ function Tabs() {
   );
 }
 
+let newMenuOpen = false;
+let newMenuQuery = "";
+
+function setNewMenu(open: boolean): void {
+  newMenuOpen = open;
+  if (!open) newMenuQuery = "";
+  refresh();
+}
+
+/** Closes the menu, then runs what was picked in it. */
+function pickNew(run: () => void): void {
+  newMenuOpen = false;
+  newMenuQuery = "";
+  run();
+  refresh();
+}
+
+function createHost(): void {
+  ui.view = "hosts";
+  activate("home");
+  newHost();
+}
+
+/** One line of the "+" menu: a mark, a name, and an optional detail in monospace. */
+function NewMenuItem(props: { id: string; mark: unknown; title: string; detail?: string; onClick: () => void }) {
+  return (
+    <Pressable
+      id={props.id}
+      focusable
+      onClick={props.onClick}
+      onKeyDown={key => { if (key === "Enter") props.onClick(); }}
+      control={{ role: "menuitem", label: props.title }}
+      style={{ direction: "row", align: "center", gap: 10, height: touch() ? 44 : 36, padding: { left: 10, right: 10 }, radius: radius.control - 2, cursor: "pointer", hover: { background: color.hover }, active: { background: color.lineStrong }, focusVisible: { outlineWidth: 2, outlineColor: color.accent } }}
+    >
+      <Row style={{ width: 16, align: "center", justify: "center", shrink: 0 }}>{props.mark as never}</Row>
+      <Text size={13} weight={550} color={color.text} style={{ whiteSpace: "nowrap", textOverflow: "ellipsis", shrink: 1, minWidth: 0 }}>{props.title}</Text>
+      {props.detail ? <Text size={11.5} color={color.faint} style={{ ...mono, flex: 1, textAlign: "end", whiteSpace: "nowrap", textOverflow: "ellipsis", minWidth: 0 }}>{props.detail}</Text> : null}
+    </Pressable>
+  );
+}
+
+/** "+" in the title bar: a local terminal or a session on any saved host, from one menu. */
+function NewTabMenu({ id }: { id: string }) {
+  const hosts = ui.hosts;
+  // A filter only pays off once the list no longer fits at a glance.
+  const filtered = hosts.length > 6;
+  const shown = hosts
+    .filter(host => hostMatches(host, filtered ? newMenuQuery.trim() : ""))
+    .sort((a, b) => (b.data.lastConnected ?? 0) - (a.data.lastConnected ?? 0) || a.data.name.localeCompare(b.data.name));
+  return (
+    <Flyout
+      id={id}
+      open={newMenuOpen}
+      onOpenChange={setNewMenu}
+      placement="bottom-start"
+      label={t("New tab")}
+      anchor={
+        <Pressable
+          focusable={false}
+          control={{ role: "button", label: t("New tab"), expanded: newMenuOpen }}
+          style={{ width: 30, height: 30, shrink: 0, radius: radius.control, align: "center", justify: "center", cursor: "pointer", background: newMenuOpen ? color.hover : "transparent", hover: { background: color.hover }, active: { background: color.lineStrong } }}
+        >
+          <Glyph name="plus" size={15} color={newMenuOpen ? color.text : color.muted} />
+        </Pressable>
+      }
+      contentStyle={{ width: Math.min(320, viewport().width - 16), padding: 6, gap: 2, radius: radius.panel, background: color.panel, borderColor: color.line, borderWidth: 1, boxShadow: "0 10px 28px #00000066" }}
+    >
+      <NewMenuItem id={`${id}-local`} mark={<Glyph name="terminal" size={14} color={color.accent} />} title={t("Local terminal")} detail={t("local shell")} onClick={() => pickNew(openLocal)} />
+      <Row style={{ height: 1, background: color.line, margin: { top: 4, bottom: 4, left: 4, right: 4 } }} />
+      <Row style={{ padding: { left: 10, right: 10, top: 2, bottom: 4 } }}>
+        <Label>{t("Saved hosts")}</Label>
+      </Row>
+      {filtered ? (
+        <Row style={{ padding: { left: 4, right: 4, bottom: 4 } }}>
+          <TextField
+            id={`${id}-filter`}
+            autoFocus={!touch()}
+            value={newMenuQuery}
+            placeholder={t("Filter hosts")}
+            onChange={value => { newMenuQuery = value; refresh(); }}
+            onSubmit={() => { const first = shown[0]; if (first) pickNew(() => connect(first.id)); }}
+            style={{ flex: 1, height: 30, fontSize: 12.5 }}
+          />
+        </Row>
+      ) : null}
+      {hosts.length === 0 ? (
+        <Column gap={8} style={{ padding: { left: 10, right: 10, top: 2, bottom: 6 } }}>
+          <Hint>{t("No saved hosts yet.")}</Hint>
+          <Action icon="plus" label={t("New host")} onClick={() => pickNew(createHost)} />
+        </Column>
+      ) : shown.length === 0 ? (
+        <Row style={{ padding: { left: 10, right: 10, top: 2, bottom: 6 } }}>
+          <Hint>{t("Nothing matches \"{query}\".", { query: newMenuQuery.trim() })}</Hint>
+        </Row>
+      ) : (
+        <Scroll style={{ maxHeight: 300 }}>
+          <Column gap={2}>
+            {shown.map(host => (
+              <NewMenuItem
+                key={host.id}
+                id={`${id}-host-${host.id}`}
+                mark={<Row style={{ width: 8, height: 8, radius: 4, background: labels[host.data.color ?? "slate"] ?? labels.slate }} />}
+                title={host.data.name || host.data.address}
+                detail={hostAddress(host.data)}
+                onClick={() => pickNew(() => connect(host.id))}
+              />
+            ))}
+          </Column>
+        </Scroll>
+      )}
+    </Flyout>
+  );
+}
 
 let switcherOpen = false;
 
@@ -681,6 +828,7 @@ function TitleActions() {
 export function handleBack(): boolean {
   if (ui.fault) { dismissFault(); return true; }
   if (switcherOpen) { switcherOpen = false; return true; }
+  if (newMenuOpen) { newMenuOpen = false; newMenuQuery = ""; return true; }
   if (ui.paletteOpen) { ui.paletteOpen = false; return true; }
   if (ui.settingsOpen) { ui.settingsOpen = false; return true; }
   if (closeImport()) return true;
